@@ -1,0 +1,90 @@
+---
+application:
+  name: registrationService
+
+metrics:
+  enabled: true
+  export:
+    datadog:
+      enabled: false
+
+environments:
+  development:
+    metrics:
+      export:
+        datadog:
+          enabled: false
+    config:
+      registration:
+        use_ldap: true
+        ldap:
+          url: ldap://localhost:389
+          base_dn: dc=valuelabs,dc=com
+          use_ssl: false
+          trust_store: /Users/jgnoonan/registration-service/config/certs/truststore.jks
+          trust_store_password: changeit
+          trust_store_type: JKS
+          hostname_verification: true
+          connection_timeout: 30000
+          read_timeout: 30000
+          min_pool_size: 3
+          max_pool_size: 10
+          pool_timeout: 300000
+          max_retries: 3
+          user_filter: "(uid={0})"
+          bind_dn: cn=admin,dc=valuelabs,dc=com
+          bind_password: Rat3onal
+          phone_number_attribute: mobile
+          test_phone_number: "+12025550123"
+  production:
+    config:
+      registration:
+        use_ldap: true
+
+executors:
+  scheduled:
+    type: scheduled
+    core_pool_size: 16
+
+rate_limits:
+  check_verification_code:
+    delays: 60
+  leaky_bucket:
+    session_creation:
+      name: registration
+      max_capacity: 100
+      permit_regeneration_period: 10
+      min_delay: 25
+  send_sms_verification_code:
+    delays: 10
+  send_voice_verification_code:
+    delay_after_first_sms: 120
+    delays: 60
+
+dynamodb:
+  enabled: true
+  table_name: signal_accounts
+  region: us-west-2
+  endpoint: http://localhost:8000  # For local development
+
+twilio:
+  enabled: true
+  account_sid: ~  # Set via environment variable
+  auth_token: ~   # Set via environment variable
+  verify_service_sid: ~  # Set via environment variable
+  verification_timeout_secs: 300
+
+selection:
+  sms:
+    transport: NONE
+    fallback_senders: ["last-digits-of-phone-number"]
+  voice:
+    transport: VOICE
+    fallback_senders: ["last-digits-of-phone-number"]
+    default_weights:
+      last-digits-of-phone-number: 100
+
+grpc:
+  server:
+    endpoint: localhost
+    port: 50052

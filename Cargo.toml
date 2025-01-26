@@ -1,0 +1,50 @@
+[package]
+name = "rust_ldap_registration"
+version = "0.1.0"
+edition = "2021"
+authors = ["Signal"]
+description = "Signal Registration Service in Rust with LDAP Authentication"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-stream = "0.1.14"
+
+# Web framework and gRPC
+tonic = "0.12.3"
+prost = "0.13.4"
+axum = "0.8.1"
+
+# LDAP
+ldap3 = "0.11.3"
+
+# AWS
+aws-config = "1.1.1"
+aws-sdk-dynamodb = "1.9.0"
+
+# HTTP client
+reqwest = { version = "0.12.12", features = ["json"] }
+
+# Configuration
+config = "0.15.6"
+serde = { version = "1.0.195", features = ["derive"] }
+serde_json = "1.0.111"
+
+# Error handling
+anyhow = "1.0.77"
+thiserror = "2.0.11"
+
+# Logging and metrics
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+
+# Utils
+uuid = { version = "1.6.1", features = ["v4"] }
+chrono = "0.4.31"
+
+# Testing
+mockito = "1.2.0"
+tokio-test = "0.4.3"
+
+[build-dependencies]
+tonic-build = "0.12.3"

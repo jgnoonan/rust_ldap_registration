@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package registration;
+
+// Registration service for handling user registration
+service RegistrationService {
+  // Start a registration session
+  rpc StartRegistration (StartRegistrationRequest) returns (StartRegistrationResponse);
+  
+  // Verify a registration code
+  rpc VerifyCode (VerifyCodeRequest) returns (VerifyCodeResponse);
+  
+  // Complete registration
+  rpc CompleteRegistration (CompleteRegistrationRequest) returns (CompleteRegistrationResponse);
+}
+
+message StartRegistrationRequest {
+  string username = 1;
+  string password = 2;
+  string channel = 3;  // "sms" or "voice"
+}
+
+message StartRegistrationResponse {
+  string session_id = 1;
+  string phone_number = 2;
+  int32 verification_code_length = 3;
+  int32 verification_timeout_seconds = 4;
+}
+
+message VerifyCodeRequest {
+  string session_id = 1;
+  string code = 2;
+}
+
+message VerifyCodeResponse {
+  bool success = 1;
+  string message = 2;
+  int32 remaining_attempts = 3;
+}
+
+message CompleteRegistrationRequest {
+  string session_id = 1;
+  uint64 registration_id = 2;
+  int32 device_id = 3;
+  string identity_key = 4;
+}
+
+message CompleteRegistrationResponse {
+  bool success = 1;
+  string message = 2;
+}
