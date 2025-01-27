@@ -1,22 +1,11 @@
-/// Twilio Integration Module
-///
-/// Provides Twilio SMS and Voice verification services for the Signal Registration Service.
-/// This module handles sending verification codes and verifying user responses through
-/// Twilio's Verify API.
-///
-/// # Features
-/// - SMS verification
-/// - Voice verification
-/// - Rate limiting
-/// - Configurable timeouts and retries
-/// - Test mode support
-///
-/// # Copyright
-/// Copyright (c) 2025 Signal Messenger, LLC
-/// All rights reserved.
-///
-/// # License
-/// Licensed under the AGPLv3 license.
+//! Twilio client for phone number verification.
+//!
+//! This module provides integration with Twilio's Verify API for phone number
+//! verification. It handles sending verification codes and validating responses
+//! from users. The module supports both production and test modes for development.
+//!
+//! @author Joseph G Noonan
+//! @copyright 2025
 
 use reqwest::Client as HttpClient;
 use anyhow::Result;
@@ -27,18 +16,18 @@ use serde::Deserialize;
 pub mod rate_limit;
 pub use rate_limit::RateLimiter;
 
-/// Configuration for Twilio API connection
+/// Configuration for Twilio API connection.
 #[derive(Debug, Clone)]
 pub struct TwilioConfig {
-    /// Twilio Account SID
+    /// Twilio account SID
     pub account_sid: String,
-    /// Twilio Auth Token
+    /// Twilio auth token
     pub auth_token: String,
-    /// Twilio Verify Service SID
+    /// Verify service SID
     pub verify_service_sid: String,
-    /// Verification timeout in seconds
+    /// Timeout for verification codes in seconds
     pub verification_timeout_secs: u64,
-    /// Test mode flag - if true, uses last 6 digits of phone number as verification code
+    /// Whether to operate in test mode
     pub test_mode: bool,
 }
 
@@ -60,7 +49,11 @@ impl ToString for VerificationChannel {
     }
 }
 
-/// Client for Twilio Verify API operations
+/// Client for Twilio Verify API operations.
+///
+/// Provides methods for sending verification codes and checking responses
+/// via Twilio's Verify API. Supports both production and test modes for
+/// development environments.
 #[derive(Debug)]
 pub struct TwilioClient {
     account_sid: String,
@@ -68,32 +61,17 @@ pub struct TwilioClient {
     verification_service_sid: String,
     http_client: HttpClient,
     test_mode: bool,
-    test_ldap_phone: Option<String>,  // Stores the LDAP phone number for test mode
+    test_ldap_phone: Option<String>,
 }
 
 impl TwilioClient {
-    /// Creates a new Twilio client with the specified configuration
+    /// Creates a new Twilio client instance.
     ///
     /// # Arguments
-    /// * `config` - Twilio configuration including credentials and service SID
+    /// * `config` - Twilio configuration including credentials
     ///
     /// # Returns
-    /// * `Result<TwilioClient>` - New Twilio client instance or error if configuration fails
-    ///
-    /// # Examples
-    /// ```no_run
-    /// use registration_service::twilio::{TwilioClient, TwilioConfig};
-    ///
-    /// let config = TwilioConfig {
-    ///     account_sid: "AC123...".to_string(),
-    ///     auth_token: "auth123...".to_string(),
-    ///     verify_service_sid: "VA123...".to_string(),
-    ///     verification_timeout_secs: 300,
-    ///     test_mode: true,  // Use test mode for development
-    /// };
-    ///
-    /// let client = TwilioClient::new(config).expect("Failed to create Twilio client");
-    /// ```
+    /// * `Result<Self>` - New client instance or error if initialization fails
     pub fn new(config: TwilioConfig) -> Result<Self> {
         let http_client = HttpClient::builder()
             .timeout(Duration::from_secs(config.verification_timeout_secs))
@@ -109,18 +87,10 @@ impl TwilioClient {
         })
     }
 
-    /// Sets the LDAP phone number for test mode verification
-    pub fn set_test_ldap_phone(&mut self, phone: String) {
-        self.test_ldap_phone = Some(phone);
-    }
-    
-    /// Sends a verification code via SMS or voice
-    ///
-    /// In test mode, this always succeeds and the verification code will be
-    /// the last 6 digits of the LDAP phone number.
+    /// Sends a verification code to a phone number.
     ///
     /// # Arguments
-    /// * `phone_number` - Target phone number in E.164 format
+    /// * `phone_number` - Target phone number for verification
     /// * `channel` - Verification channel (SMS or Voice)
     ///
     /// # Returns
@@ -161,18 +131,15 @@ impl TwilioClient {
         info!("Sent verification code to {}", phone_number);
         Ok(())
     }
-    
-    /// Verifies a code submitted by the user
-    ///
-    /// In test mode, the verification code must match the last 6 digits
-    /// of the LDAP phone number.
+
+    /// Verifies a code submitted by a user.
     ///
     /// # Arguments
-    /// * `phone_number` - Phone number in E.164 format
+    /// * `phone_number` - Phone number being verified
     /// * `code` - Verification code submitted by user
     ///
     /// # Returns
-    /// * `Result<bool>` - True if verification succeeds, false otherwise
+    /// * `Result<bool>` - True if code is valid
     pub async fn verify_code(&self, phone_number: &str, code: &str) -> Result<bool> {
         if self.test_mode {
             let ldap_phone = self.test_ldap_phone.as_ref()
@@ -226,5 +193,13 @@ impl TwilioClient {
         
         let check: VerificationCheck = response.json().await?;
         Ok(check.status == "approved")
+    }
+
+    /// Stores a phone number for test mode verification.
+    ///
+    /// # Arguments
+    /// * `phone` - Phone number to store for testing
+    pub fn set_test_ldap_phone(&mut self, phone: String) {
+        self.test_ldap_phone = Some(phone);
     }
 }

@@ -1,3 +1,11 @@
+//! DynamoDB client implementation for persistent storage.
+//!
+//! This module provides a DynamoDB-based implementation for storing and retrieving
+//! user registration records. It handles the persistence layer of the registration
+//! service, maintaining a record of registered users and their associated data.
+//!
+//! @author Joseph G Noonan
+//! @copyright 2025
 use aws_sdk_dynamodb::Client as AwsDynamoDbClient;
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
@@ -20,7 +28,7 @@ pub struct DynamoDbConfig {
     pub table_name: String,
 }
 
-/// Represents a user registration record in DynamoDB
+/// Represents a user registration record in DynamoDB.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegistrationRecord {
     /// User's username
@@ -103,13 +111,25 @@ impl DynamoDbOps for AwsDynamoDbClient {
     }
 }
 
-#[derive(Debug)]
+/// Client for interacting with DynamoDB registration table.
+///
+/// Provides methods for storing, retrieving, and managing user registration
+/// records in DynamoDB. The client handles all AWS SDK interactions and
+/// provides a high-level interface for registration operations.
 pub struct DynamoDbClient {
     client: Box<dyn DynamoDbOps>,
     config: DynamoDbConfig,
 }
 
 impl DynamoDbClient {
+    /// Creates a new DynamoDB client instance.
+    ///
+    /// # Arguments
+    /// * `table_name` - Name of the DynamoDB table for registrations
+    /// * `region` - AWS region for the DynamoDB table
+    ///
+    /// # Returns
+    /// * `Result<Self>` - New client instance or error if initialization fails
     pub async fn new(table_name: String, region: String) -> Result<Self, Error> {
         let region_provider = RegionProviderChain::first_try(Region::new(region.clone()));
         let shared_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
@@ -127,6 +147,15 @@ impl DynamoDbClient {
         })
     }
 
+    /// Stores a new registration record in DynamoDB.
+    ///
+    /// # Arguments
+    /// * `username` - Username associated with the registration
+    /// * `phone_number` - User's verified phone number
+    /// * `registration_id` - Signal registration ID
+    ///
+    /// # Returns
+    /// * `Result<()>` - Success or error if storage fails
     pub async fn save_registration(
         &self,
         username: &str,
@@ -162,6 +191,13 @@ impl DynamoDbClient {
         Ok(())
     }
 
+    /// Retrieves a registration record by phone number.
+    ///
+    /// # Arguments
+    /// * `phone_number` - Phone number to look up
+    ///
+    /// # Returns
+    /// * `Result<Option<RegistrationRecord>>` - Registration record if found
     pub async fn get_registration(
         &self,
         phone_number: &str,
@@ -206,6 +242,13 @@ impl DynamoDbClient {
         }
     }
 
+    /// Deletes a registration record by phone number.
+    ///
+    /// # Arguments
+    /// * `phone_number` - Phone number of the record to delete
+    ///
+    /// # Returns
+    /// * `Result<()>` - Success or error if deletion fails
     pub async fn delete_registration(&self, phone_number: &str) -> Result<(), Error> {
         let mut key = HashMap::new();
         key.insert(

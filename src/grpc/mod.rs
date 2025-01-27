@@ -1,3 +1,11 @@
+//! gRPC server implementation for the Signal Registration Service.
+//!
+//! This module implements the gRPC service endpoints defined in the proto files,
+//! handling user registration and LDAP validation requests. It manages user sessions,
+//! rate limiting, and coordinates between various backend services (LDAP, Twilio, DynamoDB).
+//!
+//! @author Joseph G Noonan
+//! @copyright 2025
 use tonic::{Request, Response, Status};
 use crate::auth::ldap::{LdapClient, Error};
 use crate::twilio::TwilioClient;
@@ -12,20 +20,24 @@ use crate::proto::registration::{
     CompleteRegistrationResponse,
     registration_service_server::RegistrationService,
 };
-use tracing::{info, error, debug};
+use tracing::{error, debug};
 use std::time::{SystemTime, Duration};
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-/// Session data for registration process
+/// Represents a user registration session with associated state and timing information.
 #[derive(Debug)]
 struct Session {
+    /// Username associated with the session
     username: String,
+    /// Phone number being verified
     phone_number: String,
-    verified: bool,
+    /// Timestamp when the session was created
     created_at: SystemTime,
+    /// Whether the session has been verified
+    verified: bool,
 }
 
 /// Maps LDAP errors to gRPC status codes
@@ -37,18 +49,25 @@ impl From<Error> for Status {
                 Status::not_found(format!("Phone number not found in attribute: {}", attr)),
             Error::PhoneNumberEmpty => 
                 Status::invalid_argument("Phone number is empty"),
-            Error::UserNotFound => 
-                Status::not_found("User not found"),
+            Error::UserNotFound(msg) => 
+                Status::not_found(format!("User not found: {}", msg)),
             Error::AuthenticationFailed => 
                 Status::unauthenticated("Authentication failed"),
-            Error::ServerError => 
-                Status::internal("Server error"),
+            Error::ServerError(msg) => 
+                Status::internal(format!("Server error: {}", msg)),
         }
     }
 }
 
-/// Implementation of the Registration gRPC service
-#[derive(Debug)]
+/// Main server implementation for the registration service.
+///
+/// Handles all gRPC endpoints related to user registration, including:
+/// - Starting registration process
+/// - Verifying phone numbers
+/// - Completing registration
+///
+/// The server maintains session state and coordinates between LDAP authentication,
+/// Twilio phone verification, and DynamoDB persistence.
 pub struct RegistrationServer {
     ldap_client: Arc<LdapClient>,
     twilio_client: Arc<TwilioClient>,
@@ -60,6 +79,19 @@ pub struct RegistrationServer {
 
 #[tonic::async_trait]
 impl RegistrationService for RegistrationServer {
+    /// Starts a new registration process for a user.
+    ///
+    /// # Arguments
+    /// * `request` - Contains the username to validate
+    ///
+    /// # Returns
+    /// * Success: Response with session token for subsequent requests
+    /// * Error: Status with error details if validation fails
+    ///
+    /// # Flow
+    /// 1. Validates username exists in LDAP
+    /// 2. Creates new session
+    /// 3. Returns session token to client
     async fn start_registration(
         &self,
         request: Request<StartRegistrationRequest>,
@@ -119,6 +151,19 @@ impl RegistrationService for RegistrationServer {
         }))
     }
 
+    /// Verifies a phone number for registration.
+    ///
+    /// # Arguments
+    /// * `request` - Contains session token and verification code
+    ///
+    /// # Returns
+    /// * Success: Response indicating verification code was sent
+    /// * Error: Status with error details if verification fails
+    ///
+    /// # Flow
+    /// 1. Validates session exists and is valid
+    /// 2. Verifies code with Twilio
+    /// 3. Updates session state
     async fn verify_code(
         &self,
         request: Request<VerifyCodeRequest>,
@@ -176,6 +221,20 @@ impl RegistrationService for RegistrationServer {
         }))
     }
 
+    /// Completes the registration process.
+    ///
+    /// # Arguments
+    /// * `request` - Contains session token and verification code
+    ///
+    /// # Returns
+    /// * Success: Response indicating successful registration
+    /// * Error: Status with error details if verification fails
+    ///
+    /// # Flow
+    /// 1. Validates session exists and is valid
+    /// 2. Verifies code with Twilio
+    /// 3. Stores registration in DynamoDB
+    /// 4. Cleans up session
     async fn complete_registration(
         &self,
         request: Request<CompleteRegistrationRequest>,
@@ -223,6 +282,17 @@ impl RegistrationService for RegistrationServer {
 }
 
 impl RegistrationServer {
+    /// Creates a new instance of the registration server.
+    ///
+    /// # Arguments
+    /// * `ldap_client` - Client for LDAP authentication and user validation
+    /// * `twilio_client` - Client for phone number verification via Twilio
+    /// * `dynamodb_client` - Client for persistent storage in DynamoDB
+    /// * `rate_limiter` - Rate limiter to prevent abuse
+    /// * `session_timeout_secs` - Session timeout in seconds
+    ///
+    /// # Returns
+    /// A new `RegistrationServer` instance configured with the provided clients
     pub fn new(
         ldap_client: LdapClient,
         twilio_client: TwilioClient,
@@ -240,6 +310,9 @@ impl RegistrationServer {
         }
     }
 
+    /// Removes expired sessions from the session store.
+    ///
+    /// This is called periodically to prevent memory leaks from abandoned sessions.
     pub async fn cleanup_expired_sessions(&self) {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_, session| {

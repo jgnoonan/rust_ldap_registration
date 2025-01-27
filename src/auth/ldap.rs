@@ -1,6 +1,15 @@
+//! LDAP authentication and user validation.
+//!
+//! This module provides LDAP-based authentication and user validation services.
+//! It handles connecting to LDAP servers, searching for users, and validating
+//! credentials. The module is used by the registration service to verify user
+//! identities and retrieve associated information like phone numbers.
+//!
+//! @author Joseph G Noonan
+//! @copyright 2025
 use ldap3::{
     Ldap, LdapConnAsync,
-    result::{LdapError as Ldap3Error, LdapResult},
+    result::{LdapError as Ldap3Error},
     Scope, SearchEntry,
 };
 use std::sync::Arc;
@@ -8,41 +17,45 @@ use thiserror::Error;
 use tracing::{debug, error};
 use tokio::sync::Mutex as TokioMutex;
 
-/// Configuration for LDAP connection and search settings
+/// Configuration for LDAP connection and operations.
 #[derive(Debug, Clone)]
 pub struct LdapConfig {
     /// LDAP server URL
     pub url: String,
-    /// Bind DN
+    /// DN to bind with for initial connection
     pub bind_dn: String,
-    /// Bind password
+    /// Password for bind DN
     pub bind_password: String,
-    /// Base DN for user search
+    /// Base DN for user searches
     pub base_dn: String,
-    /// Attribute for username in LDAP records
+    /// Attribute containing username
     pub username_attribute: String,
-    /// LDAP attribute containing phone number
+    /// Attribute containing phone number
     pub phone_number_attribute: String,
 }
 
 /// Errors that can occur during LDAP operations
-#[derive(Debug, Error)]
+#[derive(Error, Debug)]
 pub enum Error {
     #[error("LDAP error: {0}")]
     Ldap(#[from] Ldap3Error),
+    #[error("User not found: {0}")]
+    UserNotFound(String),
     #[error("Phone number not found in attribute: {0}")]
     PhoneNumberNotFound(String),
     #[error("Phone number is empty")]
     PhoneNumberEmpty,
-    #[error("User not found")]
-    UserNotFound,
     #[error("Authentication failed")]
     AuthenticationFailed,
-    #[error("Server error")]
-    ServerError,
+    #[error("Server error: {0}")]
+    ServerError(String),
 }
 
-/// LDAP client for user authentication and phone number retrieval
+/// Client for LDAP authentication and user operations.
+///
+/// Provides methods for connecting to LDAP servers, searching for users,
+/// and validating credentials. The client maintains a connection pool
+/// and handles reconnection as needed.
 #[derive(Debug, Clone)]
 pub struct LdapClient {
     config: LdapConfig,
@@ -61,6 +74,13 @@ impl LdapClient {
             .replace('/', "\\2f")
     }
 
+    /// Creates a new LDAP client and establishes initial connection.
+    ///
+    /// # Arguments
+    /// * `config` - LDAP configuration including server URL and credentials
+    ///
+    /// # Returns
+    /// * `Result<Self>` - New client instance or error if connection fails
     pub async fn new(config: LdapConfig) -> Result<Self, Error> {
         let (conn, ldap) = LdapConnAsync::new(&config.url).await?;
         
@@ -73,6 +93,10 @@ impl LdapClient {
         Ok(Self { config, pool })
     }
     
+    /// Retrieves a connection from the pool or creates a new one if none are available.
+    ///
+    /// # Returns
+    /// * `Result<Ldap>` - LDAP connection instance
     async fn get_connection(&self) -> Result<Ldap, Error> {
         let mut pool = self.pool.lock().await;
         if let Some(ldap) = pool.pop() {
@@ -86,11 +110,20 @@ impl LdapClient {
         }
     }
     
+    /// Returns a connection to the pool after use.
     async fn return_connection(&self, ldap: Ldap) {
         let mut pool = self.pool.lock().await;
         pool.push(ldap);
     }
     
+    /// Authenticates a user against LDAP.
+    ///
+    /// # Arguments
+    /// * `username` - Username to authenticate
+    /// * `password` - Password to check
+    ///
+    /// # Returns
+    /// * `Result<String>` - User's phone number if authentication succeeds
     pub async fn authenticate_user(&self, username: &str, password: &str) -> Result<String, Error> {
         let ldap = self.get_connection().await?;
         
@@ -127,6 +160,14 @@ impl LdapClient {
         Ok(phone_number)
     }
 
+    /// Searches for a user and retrieves their DN and phone number.
+    ///
+    /// # Arguments
+    /// * `ldap` - LDAP connection instance
+    /// * `username` - Username to search for
+    ///
+    /// # Returns
+    /// * `Result<(String, String, Ldap)>` - User's DN, phone number, and LDAP connection instance
     async fn find_user(&self, mut ldap: Ldap, username: &str) -> Result<(String, String, Ldap), Error> {
         debug!("Input username: {}", username);
         
@@ -158,7 +199,7 @@ impl LdapClient {
             vec![&self.config.phone_number_attribute],
         ).await.map_err(|e| {
             error!("LDAP search failed: {:?}", e);
-            Error::ServerError
+            Error::ServerError(e.to_string())
         })?.success()?;
         
         debug!("LDAP search result: {:?}", result);
@@ -166,7 +207,7 @@ impl LdapClient {
         
         if entries.is_empty() {
             error!("No user found with username: {}", username);
-            return Err(Error::UserNotFound);
+            return Err(Error::UserNotFound(username.to_string()));
         }
         
         let entry = SearchEntry::construct(entries.remove(0));

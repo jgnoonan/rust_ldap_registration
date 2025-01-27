@@ -1,21 +1,43 @@
+//! LDAP validation service implementation.
+//!
+//! This module provides a gRPC service for validating LDAP credentials and retrieving
+//! user information from LDAP directories. It is used to verify user existence and
+//! retrieve associated phone numbers during the registration process.
+//!
+//! @author Joseph G Noonan
+//! @copyright 2025
+
 use tonic::{Request, Response, Status};
-use crate::auth::ldap::{LdapClient, Error as LdapError};
 use tracing::{info, error, debug};
 
-pub use crate::proto::org::signal::registration::ldap::rpc::{
-    ValidateCredentialsRequest,
-    ValidateCredentialsResponse,
-    ValidateCredentialsError,
-    ValidateCredentialsErrorType,
-    ldap_validation_service_server::{LdapValidationService, LdapValidationServiceServer},
+use crate::proto::org::signal::registration::ldap::rpc::{
+    validate_credentials_response::Result as ValidateCredentialsResult,
+    ValidateCredentialsResponse, ValidateCredentialsRequest, ValidateCredentialsError,
 };
 
+pub use crate::proto::org::signal::registration::ldap::rpc::ldap_validation_service_server::{
+    LdapValidationService, LdapValidationServiceServer
+};
+
+use crate::auth::ldap::{LdapClient, Error as LdapError};
+
+/// Server implementation for LDAP validation service.
+///
+/// Provides endpoints for validating user existence in LDAP and retrieving
+/// associated user information such as phone numbers.
 #[derive(Debug)]
 pub struct LdapValidationServer {
     ldap_client: LdapClient,
 }
 
 impl LdapValidationServer {
+    /// Creates a new LDAP validation server instance.
+    ///
+    /// # Arguments
+    /// * `ldap_client` - Client for LDAP operations
+    ///
+    /// # Returns
+    /// A new `LdapValidationServer` instance
     pub fn new(ldap_client: LdapClient) -> Self {
         Self { ldap_client }
     }
@@ -23,57 +45,54 @@ impl LdapValidationServer {
 
 #[tonic::async_trait]
 impl LdapValidationService for LdapValidationServer {
+    /// Validates a user's LDAP credentials and retrieves their phone number.
+    ///
+    /// # Arguments
+    /// * `request` - Contains the username and password to validate
+    ///
+    /// # Returns
+    /// * Success: Response with user's phone number if authentication is successful
+    /// * Error: Status with error details if validation fails
     async fn validate_credentials(
         &self,
         request: Request<ValidateCredentialsRequest>,
     ) -> Result<Response<ValidateCredentialsResponse>, Status> {
         let request = request.into_inner();
+        
         info!("Received validation request for user: {}", request.user_id);
         debug!("Attempting LDAP authentication...");
         
-        match self.ldap_client.authenticate_user(&request.user_id, &request.password).await {
+        let result = self.ldap_client.authenticate_user(&request.user_id, &request.password).await;
+        
+        match result {
             Ok(phone_number) => {
                 info!("Authentication successful for user: {}", request.user_id);
-                debug!("Retrieved phone number: {}", phone_number);
-                
-                let response = ValidateCredentialsResponse {
-                    result: Some(crate::proto::org::signal::registration::ldap::rpc::validate_credentials_response::Result::PhoneNumber(
-                        phone_number,
-                    )),
-                };
-                Ok(Response::new(response))
+                Ok(Response::new(ValidateCredentialsResponse {
+                    result: Some(ValidateCredentialsResult::PhoneNumber(phone_number)),
+                }))
             }
-            Err(error) => {
-                let error_type = match error {
+            Err(err) => {
+                let (error_type, message) = match err {
+                    LdapError::UserNotFound(msg) => {
+                        error!("User not found: {}", msg);
+                        (1, msg)
+                    }
                     LdapError::AuthenticationFailed => {
-                        error!("Authentication failed for user: {}", request.user_id);
-                        ValidateCredentialsErrorType::InvalidCredentials
-                    }
-                    LdapError::UserNotFound => {
-                        error!("User not found: {}", request.user_id);
-                        ValidateCredentialsErrorType::UserNotFound
-                    }
-                    LdapError::PhoneNumberNotFound(_) | LdapError::PhoneNumberEmpty => {
-                        error!("Phone number not found for user: {}", request.user_id);
-                        ValidateCredentialsErrorType::PhoneNumberNotFound
+                        error!("Authentication failed");
+                        (2, "Invalid credentials".to_string())
                     }
                     _ => {
-                        error!("Server error during authentication: {:?}", error);
-                        ValidateCredentialsErrorType::ServerError
+                        error!("Server error: {:?}", err);
+                        (3, format!("Server error: {}", err))
                     }
                 };
                 
-                let error = ValidateCredentialsError {
-                    error_type: error_type as i32,
-                    message: error.to_string(),
-                };
-                
-                let response = ValidateCredentialsResponse {
-                    result: Some(crate::proto::org::signal::registration::ldap::rpc::validate_credentials_response::Result::Error(
-                        error,
-                    )),
-                };
-                Ok(Response::new(response))
+                Ok(Response::new(ValidateCredentialsResponse {
+                    result: Some(ValidateCredentialsResult::Error(ValidateCredentialsError {
+                        error_type,
+                        message,
+                    })),
+               }))
             }
         }
     }

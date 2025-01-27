@@ -1,55 +1,48 @@
-/// Signal Registration Service
-///
-/// This is the main entry point for the Signal Registration Service implemented in Rust.
-/// The service provides user registration functionality with LDAP authentication,
-/// Twilio-based phone number verification, and DynamoDB storage integration.
-///
-/// # Copyright
-/// Copyright (c) 2025 Signal Messenger, LLC
-/// All rights reserved.
-///
-/// # License
-/// Licensed under the AGPLv3 license.
-/// Please see the LICENSE file in the root directory for details.
+//! Signal Registration Service
+//!
+//! This is the main entry point for the Signal Registration Service implemented in Rust.
+//! The service provides user registration functionality with LDAP authentication,
+//! Twilio-based phone number verification, and DynamoDB storage integration.
+//!
+//! # Architecture
+//! The service is built using:
+//! - gRPC for API endpoints
+//! - LDAP for user authentication
+//! - Twilio for phone number verification
+//! - DynamoDB for persistent storage
+//!
+//! # Flow
+//! 1. User initiates registration with username
+//! 2. Service validates username against LDAP
+//! 3. User submits phone number for verification
+//! 4. Service sends verification code via Twilio
+//! 5. User submits verification code
+//! 6. Service stores verified registration in DynamoDB
+//!
+//! @author Joseph G Noonan
+//! @copyright 2025
 
 use tonic::transport::Server;
-use tracing::{info, error, Level};
+use tracing::{info, Level};
 use tracing_subscriber::fmt;
 use rust_ldap_registration::proto::registration::registration_service_server::RegistrationServiceServer;
 use rust_ldap_registration::grpc::RegistrationServer;
-use rust_ldap_registration::ldap_validation::{LdapValidationServer, LdapValidationService, LdapValidationServiceServer};
+use rust_ldap_registration::ldap_validation::{LdapValidationServer, LdapValidationServiceServer};
 use rust_ldap_registration::auth::ldap::{LdapClient, LdapConfig};
 use rust_ldap_registration::db::dynamodb::DynamoDbClient;
 use rust_ldap_registration::twilio::{TwilioClient, TwilioConfig};
 use rust_ldap_registration::config::Config;
 use rust_ldap_registration::twilio::rate_limit::{RateLimiter, RateLimitConfig};
 
-/// Main entry point for the registration service.
-/// 
-/// # Flow
-/// 1. Initializes logging and configuration
-/// 2. Sets up service dependencies (LDAP, Twilio, DynamoDB)
-/// 3. Starts the gRPC server
+/// Initializes the logging system with appropriate configuration.
 ///
-/// # Errors
-/// Returns an error if initialization or server startup fails
+/// Sets up structured logging with timestamps and log levels using
+/// the tracing framework. Log level is configurable via environment.
 ///
-/// # Examples
-/// ```no_run
-/// use registration_service::main;
-/// 
-/// #[tokio::main]
-/// async fn main() {
-///     if let Err(e) = main().await {
-///         eprintln!("Error: {}", e);
-///         std::process::exit(1);
-///     }
-/// }
-/// ```
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    if let Err(e) = fmt()
+/// # Returns
+/// * `Result<()>` - Success or error if logging setup fails
+fn setup_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fmt()
         .with_max_level(Level::DEBUG)
         .with_file(true)
         .with_line_number(true)
@@ -59,19 +52,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_ansi(true)
         .with_writer(std::io::stdout)
         .try_init()
-    {
-        eprintln!("Failed to initialize logging: {}", e);
-        std::process::exit(1);
-    }
+        .map_err(|e| e.into())
+}
 
-    info!("Signal Registration Service starting up...");
-    
-    // Load configuration
-    info!("Loading configuration...");
-    let config = Config::new()?;
+/// Initializes and starts all service dependencies.
+///
+/// Sets up the following components:
+/// - LDAP client for authentication
+/// - Twilio client for verification
+/// - DynamoDB client for storage
+/// - Rate limiter for request throttling
+/// - gRPC server with registration endpoints
+///
+/// # Arguments
+/// * `config` - Application configuration
+///
+/// # Returns
+/// * `Result<()>` - Success or error if any service fails to start
+async fn setup_services(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let registration_config = config.registration();
-    info!("Configuration loaded successfully");
-    
+
     // Initialize LDAP client
     info!("Initializing LDAP client with URL: {}", registration_config.ldap.url);
     let ldap_config = LdapConfig {
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Attempting to connect to LDAP server...");
     let ldap_client = LdapClient::new(ldap_config).await?;
     info!("LDAP client initialized successfully");
-    
+
     // Initialize DynamoDB client
     info!("Initializing DynamoDB client with table: {}", registration_config.dynamodb.table_name);
     let dynamodb_client = DynamoDbClient::new(
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         registration_config.dynamodb.region.clone(),
     ).await?;
     info!("DynamoDB client initialized successfully");
-    
+
     // Initialize Twilio client
     info!("Initializing Twilio client...");
     let twilio_config = TwilioConfig {
@@ -105,34 +105,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let twilio_client = TwilioClient::new(twilio_config)?;
     info!("Twilio client initialized successfully");
-    
+
     // Initialize rate limiter
     info!("Initializing rate limiter...");
     let rate_limiter = RateLimiter::new(RateLimitConfig::from(registration_config.rate_limits.clone()));
     info!("Rate limiter initialized successfully");
-    
-    // Create gRPC server
-    let addr = format!("{}:{}", registration_config.grpc.server.endpoint, registration_config.grpc.server.port).parse()?;
-    info!("Creating gRPC server with address: {}", addr);
+
+    let addr = format!("{}:{}", config.registration().grpc.server.endpoint, config.registration().grpc.server.port).parse()?;
+    info!("Starting server on {}", addr);
+
+    let ldap_service = LdapValidationServer::new(ldap_client.clone());
+
     let registration_server = RegistrationServer::new(
-        ldap_client.clone(),
+        ldap_client,
         twilio_client,
         dynamodb_client,
         rate_limiter,
-        registration_config.grpc.timeout_secs,
+        config.registration().grpc.timeout_secs,
     );
-     
-    info!("Starting gRPC server on http://{}", addr);
+
     Server::builder()
         .add_service(RegistrationServiceServer::new(registration_server))
-        .add_service(LdapValidationServiceServer::new(LdapValidationServer::new(ldap_client)))
+        .add_service(LdapValidationServiceServer::new(ldap_service))
         .serve(addr)
-        .await
-        .map_err(|e| {
-            error!("Server error: {}", e);
-            e
-        })?;
+        .await?;
 
-    info!("Server shutdown complete");
+    Ok(())
+}
+
+/// Main entry point for the registration service.
+///
+/// # Flow
+/// 1. Initializes logging and configuration
+/// 2. Sets up service dependencies (LDAP, Twilio, DynamoDB)
+/// 3. Starts the gRPC server
+///
+/// # Returns
+/// * `Result<()>` - Success or error if service fails to start
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    setup_logging()?;
+    info!("Signal Registration Service starting up...");
+
+    // Load configuration
+    info!("Loading configuration...");
+    let config = Config::new().map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+    info!("Configuration loaded successfully");
+
+    setup_services(config).await?;
+
     Ok(())
 }

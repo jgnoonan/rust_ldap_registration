@@ -18,7 +18,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Compile the protocol buffer definitions
     tonic_build::configure()
-        .compile(
+        .compile_protos(
             &[
                 "proto/registration.proto",
                 "proto/ldap_validation.proto"

@@ -12,20 +12,19 @@
 /// Licensed under the AGPLv3 license.
 /// Please see the LICENSE file in the root directory for details.
 
-use serde::Deserialize;
-use std::env;
-use std::path::PathBuf;
-use config::{Config as ConfigFile, ConfigError, Environment, File};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+use config::{Config as ConfigFile, File, Environment};
 
 /// Application metadata configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Application {
     /// Name of the application
     pub name: String,
 }
 
 /// Metrics configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Metrics {
     /// Whether metrics collection is enabled
     pub enabled: bool,
@@ -34,62 +33,21 @@ pub struct Metrics {
 }
 
 /// Metrics export configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MetricsExport {
     /// Datadog-specific configuration
     pub datadog: DatadogConfig,
 }
 
 /// Datadog configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DatadogConfig {
     /// Whether Datadog export is enabled
     pub enabled: bool,
 }
 
-/// LDAP connection and authentication configuration
-#[derive(Debug, Deserialize)]
-pub struct LdapConfig {
-    /// LDAP server URL
-    pub url: String,
-    /// Base DN for LDAP queries
-    pub base_dn: String,
-    /// Whether to use SSL for LDAP connection
-    pub use_ssl: bool,
-    /// Path to trust store file
-    pub trust_store: Option<String>,
-    /// Password for trust store
-    pub trust_store_password: Option<String>,
-    /// Trust store type (e.g., "JKS")
-    pub trust_store_type: Option<String>,
-    /// Whether to verify hostname in SSL cert
-    pub hostname_verification: bool,
-    /// Connection timeout in milliseconds
-    pub connection_timeout: u64,
-    /// Read timeout in milliseconds
-    pub read_timeout: u64,
-    /// Minimum number of connections in pool
-    pub min_pool_size: u32,
-    /// Maximum number of connections in pool
-    pub max_pool_size: u32,
-    /// Pool timeout in milliseconds
-    pub pool_timeout: u64,
-    /// Maximum number of connection retries
-    pub max_retries: u32,
-    /// LDAP filter for user lookup
-    pub user_filter: String,
-    /// DN for binding to LDAP
-    pub bind_dn: String,
-    /// Password for binding to LDAP
-    pub bind_password: String,
-    /// LDAP attribute containing phone number
-    pub phone_number_attribute: String,
-    /// LDAP attribute for username
-    pub username_attribute: String,
-}
-
 /// Rate limiting configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RateLimits {
     /// Check verification code rate limiting
     pub check_verification_code: DelayConfig,
@@ -102,14 +60,14 @@ pub struct RateLimits {
 }
 
 /// Delay configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DelayConfig {
     /// Number of delays
     pub delays: u64,
 }
 
 /// Voice delay configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct VoiceDelayConfig {
     /// Delay after first SMS
     pub delay_after_first_sms: u64,
@@ -120,14 +78,14 @@ pub struct VoiceDelayConfig {
 }
 
 /// Leaky bucket configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LeakyBucketConfig {
     /// Session creation configuration
     pub session_creation: SessionCreationConfig,
 }
 
 /// Session creation configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SessionCreationConfig {
     /// Name of the session creation configuration
     pub name: String,
@@ -139,8 +97,63 @@ pub struct SessionCreationConfig {
     pub min_delay: u64,
 }
 
+/// Rate limit configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitConfig {
+    /// Maximum number of requests per window
+    pub max_requests: u32,
+    /// Time window in seconds
+    #[serde(rename = "window")]
+    window_secs: u64,
+}
+
+impl RateLimitConfig {
+    pub fn window(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.window_secs)
+    }
+}
+
+/// LDAP connection and authentication configuration
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct LdapConfig {
+    /// LDAP server URL
+    pub url: String,
+    /// Bind DN for authentication
+    pub bind_dn: String,
+    /// Password for bind DN
+    #[serde(skip_serializing)]
+    pub bind_password: String,
+    /// Base DN for searches
+    pub base_dn: String,
+    /// Attribute containing username
+    pub username_attribute: String,
+    /// Attribute containing phone number
+    pub phone_number_attribute: String,
+}
+
+impl LdapConfig {
+    /// Validates the configuration
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.url.is_empty() {
+            return Err(ConfigError::MissingConfig("LDAP URL is required".to_string()));
+        }
+        if self.bind_dn.is_empty() {
+            return Err(ConfigError::MissingConfig("Bind DN is required".to_string()));
+        }
+        if self.bind_password.is_empty() {
+            return Err(ConfigError::MissingConfig("Bind password is required".to_string()));
+        }
+        if self.base_dn.is_empty() {
+            return Err(ConfigError::MissingConfig("Base DN is required".to_string()));
+        }
+        Ok(())
+    }
+}
+
 /// DynamoDB configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DynamoDbConfig {
     /// Whether DynamoDB is enabled
     pub enabled: bool,
@@ -153,7 +166,7 @@ pub struct DynamoDbConfig {
 }
 
 /// Twilio configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TwilioConfig {
     /// Whether Twilio is enabled
     pub enabled: bool,
@@ -168,7 +181,7 @@ pub struct TwilioConfig {
 }
 
 /// Transport selection configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Selection {
     /// SMS transport configuration
     pub sms: TransportConfig,
@@ -177,7 +190,7 @@ pub struct Selection {
 }
 
 /// Transport configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TransportConfig {
     /// Transport type
     pub transport: String,
@@ -186,7 +199,7 @@ pub struct TransportConfig {
 }
 
 /// Voice transport configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct VoiceTransportConfig {
     /// Transport type
     pub transport: String,
@@ -197,7 +210,7 @@ pub struct VoiceTransportConfig {
 }
 
 /// gRPC server configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GrpcConfig {
     /// Server configuration
     pub server: ServerConfig,
@@ -206,7 +219,7 @@ pub struct GrpcConfig {
 }
 
 /// Server configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ServerConfig {
     /// Endpoint for server
     pub endpoint: String,
@@ -217,7 +230,7 @@ pub struct ServerConfig {
 }
 
 /// Registration configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RegistrationConfig {
     pub use_ldap: bool,
     pub ldap: LdapConfig,
@@ -228,30 +241,46 @@ pub struct RegistrationConfig {
 }
 
 /// Environment configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct EnvironmentConfig {
     pub config: ConfigWrapper,
 }
 
 /// Config wrapper
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ConfigWrapper {
     pub registration: RegistrationConfig,
 }
 
 /// Environments configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Environments {
     pub development: EnvironmentConfig,
     pub production: EnvironmentConfig,
 }
 
 /// Application configuration settings
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub application: Application,
     pub metrics: Metrics,
     pub environments: Environments,
+}
+
+#[derive(Error, Debug)]
+pub enum ConfigError {
+    #[error("Failed to read config file: {0}")]
+    FileError(#[from] std::io::Error),
+    #[error("Failed to parse config: {0}")]
+    ParseError(String),
+    #[error("Missing required config value: {0}")]
+    MissingConfig(String),
+}
+
+impl From<config::ConfigError> for ConfigError {
+    fn from(err: config::ConfigError) -> Self {
+        ConfigError::ParseError(err.to_string())
+    }
 }
 
 impl Config {
@@ -260,9 +289,7 @@ impl Config {
     /// # Configuration Sources
     /// Configuration is loaded in the following order (later sources override earlier ones):
     /// 1. Base configuration (`application.yml`)
-    /// 2. Environment-specific configuration (`application-{environment}.yml`)
-    /// 3. Local configuration (`application-local.yml`)
-    /// 4. Environment variables (prefixed with `APP_`)
+    /// 2. Environment variables (prefixed with `APP_`)
     ///
     /// # Errors
     /// Returns a `ConfigError` if:
@@ -278,18 +305,12 @@ impl Config {
     /// println!("LDAP URL: {}", config.registration().ldap.url);
     /// ```
     pub fn new() -> Result<Self, ConfigError> {
-        let environment = env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
-        
-        let config_dir = PathBuf::from("config");
-        let config = ConfigFile::builder()
-            .add_source(File::from(config_dir.join("application.yml")))
-            .add_source(File::from(config_dir.join(format!("application-{}.yml", environment))).required(false))
-            .add_source(File::from(config_dir.join("application-local.yml")).required(false))
-            .add_source(Environment::with_prefix("APP").separator("_"))
-            .build()?;
-            
-        // Deserialize the configuration
-        config.try_deserialize()
+        let builder = ConfigFile::builder()
+            .add_source(File::with_name("config/application.yml"))
+            .add_source(Environment::with_prefix("APP"));
+
+        let config = builder.build()?;
+        config.try_deserialize().map_err(|e| ConfigError::ParseError(e.to_string()))
     }
 
     /// Returns the registration configuration.
@@ -306,7 +327,7 @@ impl Config {
     /// assert!(registration_config.use_ldap);
     /// ```
     pub fn registration(&self) -> &RegistrationConfig {
-        if env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()) == "development" {
+        if std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()) == "development" {
             &self.environments.development.config.registration
         } else {
             &self.environments.production.config.registration
