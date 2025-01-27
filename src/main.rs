@@ -12,22 +12,16 @@
 /// Licensed under the AGPLv3 license.
 /// Please see the LICENSE file in the root directory for details.
 
-use std::net::SocketAddr;
 use tonic::transport::Server;
-use anyhow::Result;
-
-mod auth;
-mod db;
-mod twilio;
-mod grpc;
-mod config;
-
-use auth::ldap::LdapClient;
-use db::dynamodb::DynamoDbClient;
-use twilio::{TwilioClient, rate_limit::RateLimiter};
-use grpc::registration::registration_service_server::RegistrationServiceServer;
-use grpc::RegistrationServer;
-use config::Settings;
+use tracing::{info, error, Level};
+use tracing_subscriber::FmtSubscriber;
+use rust_ldap_registration::proto::registration::registration_service_server::RegistrationServiceServer;
+use rust_ldap_registration::grpc::RegistrationServer;
+use rust_ldap_registration::auth::ldap::{LdapClient, LdapConfig};
+use rust_ldap_registration::db::dynamodb::DynamoDbClient;
+use rust_ldap_registration::twilio::{TwilioClient, TwilioConfig};
+use rust_ldap_registration::config::Config;
+use rust_ldap_registration::twilio::rate_limit::{RateLimiter, RateLimitConfig};
 
 /// Main entry point for the registration service.
 /// 
@@ -52,56 +46,87 @@ use config::Settings;
 /// }
 /// ```
 #[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging
+    FmtSubscriber::builder()
+        .with_max_level(Level::INFO)
+        .with_target(false)
+        .with_thread_ids(true)
+        .with_file(true)
+        .with_line_number(true)
+        .with_thread_names(true)
+        .pretty()
+        .init();
+
+    info!("Signal Registration Service starting up...");
     
     // Load configuration
-    let settings = Settings::new()?;
+    info!("Loading configuration...");
+    let config = Config::new()?;
+    let registration_config = config.registration();
+    info!("Configuration loaded successfully");
     
-    // Initialize clients
-    let ldap_client = LdapClient::new(settings.ldap.into())?;
+    // Initialize LDAP client
+    info!("Initializing LDAP client with URL: {}", registration_config.ldap.url);
+    let ldap_config = LdapConfig {
+        url: registration_config.ldap.url.clone(),
+        bind_dn: registration_config.ldap.bind_dn.clone(),
+        bind_password: registration_config.ldap.bind_password.clone(),
+        search_base: registration_config.ldap.base_dn.clone(),
+        search_filter: registration_config.ldap.user_filter.clone(),
+        phone_number_attribute: registration_config.ldap.phone_number_attribute.clone(),
+        connection_pool_size: registration_config.ldap.max_pool_size as usize,
+        timeout_secs: 5,  // Set a shorter timeout
+    };
+    info!("Attempting to connect to LDAP server...");
+    let ldap_client = LdapClient::new(ldap_config).await?;
+    info!("LDAP client initialized successfully");
     
-    let twilio_config = twilio::TwilioConfig {
-        account_sid: settings.twilio.account_sid.unwrap_or_default(),
-        auth_token: settings.twilio.auth_token.unwrap_or_default(),
-        verify_service_sid: settings.twilio.verify_service_sid.unwrap_or_default(),
-        verification_timeout_secs: settings.twilio.verification_timeout_secs,
+    // Initialize DynamoDB client
+    info!("Initializing DynamoDB client with table: {}", registration_config.dynamodb.table_name);
+    let dynamodb_client = DynamoDbClient::new(
+        registration_config.dynamodb.table_name.clone(),
+        registration_config.dynamodb.region.clone(),
+    ).await?;
+    info!("DynamoDB client initialized successfully");
+    
+    // Initialize Twilio client
+    info!("Initializing Twilio client...");
+    let twilio_config = TwilioConfig {
+        account_sid: registration_config.twilio.account_sid.clone().expect("Twilio account SID is required"),
+        auth_token: registration_config.twilio.auth_token.clone().expect("Twilio auth token is required"),
+        verify_service_sid: registration_config.twilio.verify_service_sid.clone().expect("Twilio verify service SID is required"),
+        verification_timeout_secs: registration_config.twilio.verification_timeout_secs,
     };
     let twilio_client = TwilioClient::new(twilio_config)?;
+    info!("Twilio client initialized successfully");
     
-    let dynamodb_config = db::dynamodb::DynamoDbConfig {
-        table_name: settings.dynamodb.table_name,
-        region: settings.dynamodb.region,
-        endpoint: settings.dynamodb.endpoint,
-    };
-    let dynamodb_client = DynamoDbClient::new(dynamodb_config).await?;
-    
-    let rate_limit_config = twilio::rate_limit::RateLimitConfig {
-        max_attempts: settings.rate_limits.check_verification_code.delays as u32,
-        window_secs: settings.rate_limits.leaky_bucket.session_creation.permit_regeneration_period,
-    };
-    let rate_limiter = RateLimiter::new(rate_limit_config);
+    // Initialize rate limiter
+    info!("Initializing rate limiter...");
+    let rate_limiter = RateLimiter::new(RateLimitConfig::from(registration_config.rate_limits.clone()));
+    info!("Rate limiter initialized successfully");
     
     // Create gRPC server
-    let addr: SocketAddr = settings.get_socket_addr()
-        .parse()
-        .unwrap_or_else(|_| "[::1]:50051".parse().unwrap());
-        
+    let addr = format!("{}:{}", registration_config.grpc.server.endpoint, registration_config.grpc.server.port).parse()?;
+    info!("Creating gRPC server with address: {}", addr);
     let registration_server = RegistrationServer::new(
         ldap_client,
         twilio_client,
         dynamodb_client,
         rate_limiter,
-        settings.twilio.verification_timeout_secs as u64,
+        registration_config.grpc.timeout_secs,
     );
-    
-    println!("Starting gRPC server on {}", addr);
-    
+     
+    info!("Starting gRPC server on http://{}", addr);
     Server::builder()
         .add_service(RegistrationServiceServer::new(registration_server))
         .serve(addr)
-        .await?;
-        
+        .await
+        .map_err(|e| {
+            error!("Server error: {}", e);
+            e
+        })?;
+
+    info!("Server shutdown complete");
     Ok(())
 }

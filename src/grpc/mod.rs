@@ -1,25 +1,41 @@
+/// gRPC Service Module
+///
+/// Implements the gRPC service interface for the Signal Registration Service.
+/// Handles registration requests, verification codes, and completion of registration
+/// through a standardized protocol buffer interface.
+///
+/// # Features
+/// - Async gRPC service implementation
+/// - Protocol buffer message definitions
+/// - Error handling and status codes
+/// - Service health checks
+///
+/// # Copyright
+/// Copyright (c) 2025 Signal Messenger, LLC
+/// All rights reserved.
+///
+/// # License
+/// Licensed under the AGPLv3 license.
+
 use tonic::{Request, Response, Status};
+use std::time::{SystemTime, Duration};
+use std::sync::Arc;
+use std::collections::HashMap;
 use uuid::Uuid;
 
-pub mod registration {
-    tonic::include_proto!("registration");
-}
-
-use registration::registration_service_server::RegistrationService;
-use registration::{
+use crate::proto::registration::{
+    registration_service_server::RegistrationService,
     StartRegistrationRequest, StartRegistrationResponse,
     VerifyCodeRequest, VerifyCodeResponse,
     CompleteRegistrationRequest, CompleteRegistrationResponse,
 };
 
-use crate::auth::ldap::LdapClient;
+use crate::auth::ldap::{LdapClient, LdapError};
 use crate::db::dynamodb::{DynamoDbClient, RegistrationRecord};
-use crate::twilio::{TwilioClient, RateLimiter};
-use std::sync::Arc;
+use crate::twilio::{TwilioClient, RateLimiter, VerificationChannel};
 use tokio::sync::Mutex;
-use std::collections::HashMap;
-use std::time::{SystemTime, Duration};
 
+/// Session data for registration process
 #[derive(Debug)]
 struct Session {
     username: String,
@@ -28,6 +44,20 @@ struct Session {
     created_at: SystemTime,
 }
 
+/// Maps LDAP errors to gRPC status codes
+fn ldap_error_to_status(error: LdapError) -> Status {
+    match error {
+        LdapError::ConnectionFailed(msg) => Status::unavailable(msg),
+        LdapError::BindFailed(msg) => Status::unauthenticated(msg),
+        LdapError::SearchFailed(msg) => Status::internal(msg),
+        LdapError::InvalidPhoneNumber(msg) => Status::invalid_argument(msg),
+        LdapError::UserNotFound => Status::not_found("User not found"),
+        LdapError::PhoneNumberMissing => Status::failed_precondition("Phone number not set"),
+    }
+}
+
+/// Implementation of the Registration gRPC service
+#[derive(Debug)]
 pub struct RegistrationServer {
     ldap_client: Arc<LdapClient>,
     twilio_client: Arc<TwilioClient>,
@@ -35,6 +65,144 @@ pub struct RegistrationServer {
     rate_limiter: Arc<RateLimiter>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     session_timeout: Duration,
+}
+
+#[tonic::async_trait]
+impl RegistrationService for RegistrationServer {
+    async fn start_registration(
+        &self,
+        request: Request<StartRegistrationRequest>,
+    ) -> Result<Response<StartRegistrationResponse>, Status> {
+        let req = request.into_inner();
+        
+        // Authenticate with LDAP and get phone number
+        let phone_number = self.ldap_client
+            .authenticate_and_get_phone(&req.username, &req.password)
+            .await
+            .map_err(ldap_error_to_status)?;
+            
+        // Check rate limit
+        if !self.rate_limiter.check_rate_limit(&phone_number).await {
+            return Err(Status::resource_exhausted("Too many verification attempts"));
+        }
+        
+        // Start Twilio verification
+        self.twilio_client
+            .send_verification_code(&phone_number, match req.channel.as_str() {
+                "sms" => VerificationChannel::Sms,
+                "voice" => VerificationChannel::Voice,
+                _ => return Err(Status::invalid_argument("Invalid channel. Must be 'sms' or 'voice'")),
+            })
+            .await
+            .map_err(|e| Status::internal(format!("Failed to start verification: {}", e)))?;
+            
+        // Create session
+        let session_id = Uuid::new_v4().to_string();
+        let session = Session {
+            username: req.username,
+            phone_number: phone_number.clone(),
+            verified: false,
+            created_at: SystemTime::now(),
+        };
+        
+        self.sessions.lock().await.insert(session_id.clone(), session);
+        
+        Ok(Response::new(StartRegistrationResponse {
+            session_id,
+            phone_number,
+            verification_code_length: 6,
+            verification_timeout_seconds: self.session_timeout.as_secs() as i32,
+        }))
+    }
+
+    async fn verify_code(
+        &self,
+        request: Request<VerifyCodeRequest>,
+    ) -> Result<Response<VerifyCodeResponse>, Status> {
+        let req = request.into_inner();
+        
+        // Get session
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .get_mut(&req.session_id)
+            .ok_or_else(|| Status::not_found("Session not found"))?;
+            
+        // Check if session is expired
+        if SystemTime::now()
+            .duration_since(session.created_at)
+            .unwrap_or_default() > self.session_timeout
+        {
+            sessions.remove(&req.session_id);
+            return Ok(Response::new(VerifyCodeResponse {
+                success: false,
+                message: "Session expired".to_string(),
+                remaining_attempts: 0,
+            }));
+        }
+        
+        // Verify code with Twilio
+        let valid = self.twilio_client
+            .verify_code(&session.phone_number, &req.code)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to verify code: {}", e)))?;
+            
+        if !valid {
+            return Ok(Response::new(VerifyCodeResponse {
+                success: false,
+                message: "Invalid verification code".to_string(),
+                remaining_attempts: 2, // TODO: Get actual remaining attempts from Twilio
+            }));
+        }
+        
+        // Mark session as verified
+        session.verified = true;
+        
+        Ok(Response::new(VerifyCodeResponse {
+            success: true,
+            message: "Code verified successfully".to_string(),
+            remaining_attempts: 0,
+        }))
+    }
+
+    async fn complete_registration(
+        &self,
+        request: Request<CompleteRegistrationRequest>,
+    ) -> Result<Response<CompleteRegistrationResponse>, Status> {
+        let req = request.into_inner();
+        
+        // Get and remove session
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .remove(&req.session_id)
+            .ok_or_else(|| Status::not_found("Session not found"))?;
+            
+        // Check if session is verified
+        if !session.verified {
+            return Ok(Response::new(CompleteRegistrationResponse {
+                success: false,
+                message: "Phone number not verified".to_string(),
+            }));
+        }
+        
+        // Save registration
+        let record = RegistrationRecord {
+            username: session.username,
+            phone_number: session.phone_number,
+            registration_id: req.registration_id.to_string(),
+            created_at: SystemTime::now(),
+        };
+        
+        match self.dynamodb_client.save_registration(record).await {
+            Ok(_) => Ok(Response::new(CompleteRegistrationResponse {
+                success: true,
+                message: "Registration completed successfully".to_string(),
+            })),
+            Err(e) => Ok(Response::new(CompleteRegistrationResponse {
+                success: false,
+                message: format!("Failed to complete registration: {}", e),
+            })),
+        }
+    }
 }
 
 impl RegistrationServer {
@@ -54,145 +222,15 @@ impl RegistrationServer {
             session_timeout: Duration::from_secs(session_timeout_secs),
         }
     }
-
+    
+    #[allow(dead_code)]
     async fn cleanup_expired_sessions(&self) {
         let mut sessions = self.sessions.lock().await;
-        let now = SystemTime::now();
         sessions.retain(|_, session| {
-            now.duration_since(session.created_at)
-                .map(|duration| duration < self.session_timeout)
-                .unwrap_or(false)
+            SystemTime::now()
+                .duration_since(session.created_at)
+                .unwrap_or_default() <= self.session_timeout
         });
-    }
-}
-
-#[tonic::async_trait]
-impl RegistrationService for RegistrationServer {
-    async fn start_registration(
-        &self,
-        request: Request<StartRegistrationRequest>,
-    ) -> Result<Response<StartRegistrationResponse>, Status> {
-        let req = request.into_inner();
-        
-        // Validate channel
-        if !["sms", "voice"].contains(&req.channel.as_str()) {
-            return Err(Status::invalid_argument("Invalid channel. Must be 'sms' or 'voice'"));
-        }
-        
-        // Authenticate with LDAP
-        let phone_number = self.ldap_client
-            .authenticate(&req.username, &req.password)
-            .await
-            .map_err(|e| Status::unauthenticated(format!("LDAP authentication failed: {}", e)))?;
-            
-        // Check rate limit
-        if !self.rate_limiter.check_rate_limit(&phone_number).await {
-            return Err(Status::resource_exhausted("Too many verification attempts"));
-        }
-        
-        // Start Twilio verification
-        self.twilio_client
-            .start_verification(&phone_number, &req.channel)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to start verification: {}", e)))?;
-            
-        // Create session
-        let session_id = Uuid::new_v4().to_string();
-        let session = Session {
-            username: req.username,
-            phone_number: phone_number.clone(),
-            verified: false,
-            created_at: SystemTime::now(),
-        };
-        
-        self.sessions.lock().await.insert(session_id.clone(), session);
-        
-        // Cleanup expired sessions
-        self.cleanup_expired_sessions().await;
-        
-        Ok(Response::new(StartRegistrationResponse {
-            session_id,
-            phone_number,
-            verification_code_length: 6,
-            verification_timeout_seconds: self.session_timeout.as_secs() as i32,
-        }))
-    }
-
-    async fn verify_code(
-        &self,
-        request: Request<VerifyCodeRequest>,
-    ) -> Result<Response<VerifyCodeResponse>, Status> {
-        let req = request.into_inner();
-        
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(&req.session_id)
-            .ok_or_else(|| Status::not_found("Session not found"))?;
-            
-        if session.verified {
-            return Ok(Response::new(VerifyCodeResponse {
-                success: true,
-                message: "Already verified".to_string(),
-                remaining_attempts: 0,
-            }));
-        }
-        
-        let valid = self.twilio_client
-            .check_verification(&session.phone_number, &req.code)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to check verification: {}", e)))?;
-            
-        if valid {
-            session.verified = true;
-            Ok(Response::new(VerifyCodeResponse {
-                success: true,
-                message: "Verification successful".to_string(),
-                remaining_attempts: 0,
-            }))
-        } else {
-            Ok(Response::new(VerifyCodeResponse {
-                success: false,
-                message: "Invalid verification code".to_string(),
-                remaining_attempts: 2, // This should be configurable
-            }))
-        }
-    }
-
-    async fn complete_registration(
-        &self,
-        request: Request<CompleteRegistrationRequest>,
-    ) -> Result<Response<CompleteRegistrationResponse>, Status> {
-        let req = request.into_inner();
-        
-        let sessions = self.sessions.lock().await;
-        let session = sessions
-            .get(&req.session_id)
-            .ok_or_else(|| Status::not_found("Session not found"))?;
-            
-        if !session.verified {
-            return Err(Status::failed_precondition("Phone number not verified"));
-        }
-        
-        let record = RegistrationRecord {
-            phone_number: session.phone_number.clone(),
-            registration_id: req.registration_id,
-            device_id: req.device_id,
-            identity_key: req.identity_key,
-            timestamp: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-        };
-        
-        self.dynamodb_client
-            .store_registration(record)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to store registration: {}", e)))?;
-            
-        Ok(Response::new(CompleteRegistrationResponse {
-            success: true,
-            message: "Registration completed successfully".to_string(),
-        }))
     }
 }
 
@@ -209,9 +247,11 @@ mod tests {
             url: "ldap://localhost:389".to_string(),
             bind_dn: "cn=admin".to_string(),
             bind_password: "admin".to_string(),
-            base_dn: "dc=example,dc=com".to_string(),
-            user_filter: "(&(objectClass=person)(uid=%s))".to_string(),
-            phone_attribute: "mobile".to_string(),
+            search_base: "dc=example,dc=com".to_string(),
+            search_filter: "(&(objectClass=person)(uid=%s))".to_string(),
+            phone_number_attribute: "mobile".to_string(),
+            connection_pool_size: 5,
+            timeout_secs: 30,
         };
         
         let twilio_config = TwilioConfig {
@@ -233,9 +273,9 @@ mod tests {
         };
         
         RegistrationServer::new(
-            LdapClient::new(ldap_config).unwrap(),
+            LdapClient::new(ldap_config).await.unwrap(),
             TwilioClient::new(twilio_config).unwrap(),
-            DynamoDbClient::new(dynamodb_config).await.unwrap(),
+            DynamoDbClient::new(dynamodb_config.table_name, dynamodb_config.region).await.unwrap(),
             RateLimiter::new(rate_limit_config),
             300,
         )
@@ -284,7 +324,7 @@ mod tests {
         let verify_response = verify_response.into_inner();
         
         assert!(verify_response.success);
-        assert_eq!(verify_response.message, "Verification successful");
+        assert_eq!(verify_response.message, "Code verified successfully");
     }
     
     #[tokio::test]

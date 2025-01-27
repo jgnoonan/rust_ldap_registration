@@ -15,7 +15,7 @@
 use serde::Deserialize;
 use std::env;
 use std::path::PathBuf;
-use config::{Config, ConfigError, Environment, File};
+use config::{Config as ConfigFile, ConfigError, Environment, File};
 
 /// Application metadata configuration
 #[derive(Debug, Deserialize)]
@@ -84,12 +84,10 @@ pub struct LdapConfig {
     pub bind_password: String,
     /// LDAP attribute containing phone number
     pub phone_number_attribute: String,
-    /// Test phone number for development
-    pub test_phone_number: Option<String>,
 }
 
 /// Rate limiting configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RateLimits {
     /// Check verification code rate limiting
     pub check_verification_code: DelayConfig,
@@ -102,30 +100,32 @@ pub struct RateLimits {
 }
 
 /// Delay configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct DelayConfig {
     /// Number of delays
     pub delays: u64,
 }
 
 /// Voice delay configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct VoiceDelayConfig {
     /// Delay after first SMS
     pub delay_after_first_sms: u64,
     /// Number of delays
     pub delays: u64,
+    /// Maximum number of attempts allowed
+    pub max_attempts: u32,
 }
 
 /// Leaky bucket configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LeakyBucketConfig {
     /// Session creation configuration
     pub session_creation: SessionCreationConfig,
 }
 
 /// Session creation configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SessionCreationConfig {
     /// Name of the session creation configuration
     pub name: String,
@@ -138,15 +138,15 @@ pub struct SessionCreationConfig {
 }
 
 /// DynamoDB configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct DynamoDbConfig {
     /// Whether DynamoDB is enabled
     pub enabled: bool,
-    /// Table name for DynamoDB
+    /// DynamoDB table name
     pub table_name: String,
-    /// Region for DynamoDB
+    /// AWS region
     pub region: String,
-    /// Endpoint for DynamoDB
+    /// DynamoDB endpoint (optional, for local development)
     pub endpoint: Option<String>,
 }
 
@@ -199,6 +199,8 @@ pub struct VoiceTransportConfig {
 pub struct GrpcConfig {
     /// Server configuration
     pub server: ServerConfig,
+    /// Timeout in seconds for gRPC operations
+    pub timeout_secs: u64,
 }
 
 /// Server configuration
@@ -208,31 +210,50 @@ pub struct ServerConfig {
     pub endpoint: String,
     /// Port for server
     pub port: u16,
+    /// Session timeout in seconds
+    pub timeout_secs: u64,
+}
+
+/// Registration configuration
+#[derive(Debug, Deserialize)]
+pub struct RegistrationConfig {
+    pub use_ldap: bool,
+    pub ldap: LdapConfig,
+    pub grpc: GrpcConfig,
+    pub twilio: TwilioConfig,
+    pub dynamodb: DynamoDbConfig,
+    pub rate_limits: RateLimits,
+}
+
+/// Environment configuration
+#[derive(Debug, Deserialize)]
+pub struct EnvironmentConfig {
+    pub config: ConfigWrapper,
+}
+
+/// Config wrapper
+#[derive(Debug, Deserialize)]
+pub struct ConfigWrapper {
+    pub registration: RegistrationConfig,
+}
+
+/// Environments configuration
+#[derive(Debug, Deserialize)]
+pub struct Environments {
+    pub development: EnvironmentConfig,
+    pub production: EnvironmentConfig,
 }
 
 /// Application configuration settings
 #[derive(Debug, Deserialize)]
-pub struct Settings {
-    /// Application metadata
+pub struct Config {
     pub application: Application,
-    /// Metrics configuration
     pub metrics: Metrics,
-    /// LDAP configuration
-    pub ldap: LdapConfig,
-    /// Rate limiting settings
-    pub rate_limits: RateLimits,
-    /// DynamoDB configuration
-    pub dynamodb: DynamoDbConfig,
-    /// Twilio configuration
-    pub twilio: TwilioConfig,
-    /// Transport selection configuration
-    pub selection: Selection,
-    /// gRPC server configuration
-    pub grpc: GrpcConfig,
+    pub environments: Environments,
 }
 
-impl Settings {
-    /// Creates a new Settings instance by loading and merging configuration from multiple sources.
+impl Config {
+    /// Creates a new Config instance by loading and merging configuration from multiple sources.
     ///
     /// # Configuration Sources
     /// Configuration is loaded in the following order (later sources override earlier ones):
@@ -249,46 +270,45 @@ impl Settings {
     ///
     /// # Examples
     /// ```no_run
-    /// use registration_service::config::Settings;
+    /// use registration_service::config::Config;
     ///
-    /// let settings = Settings::new().expect("Failed to load configuration");
-    /// println!("LDAP URL: {}", settings.ldap.url);
+    /// let config = Config::new().expect("Failed to load configuration");
+    /// println!("LDAP URL: {}", config.registration().ldap.url);
     /// ```
     pub fn new() -> Result<Self, ConfigError> {
-        let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
+        let environment = env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
         
-        let config_dir = PathBuf::from(env::var("CONFIG_DIR").unwrap_or_else(|_| "config".into()));
-        
-        let s = Config::builder()
-            // Start with default settings
+        let config_dir = PathBuf::from("config");
+        let config = ConfigFile::builder()
             .add_source(File::from(config_dir.join("application.yml")))
-            // Add environment-specific settings
-            .add_source(File::from(config_dir.join(format!("application-{}.yml", run_mode))).required(false))
-            // Add local settings
+            .add_source(File::from(config_dir.join(format!("application-{}.yml", environment))).required(false))
             .add_source(File::from(config_dir.join("application-local.yml")).required(false))
-            // Add in settings from environment variables
             .add_source(Environment::with_prefix("APP").separator("_"))
             .build()?;
             
         // Deserialize the configuration
-        s.try_deserialize()
+        config.try_deserialize()
     }
-    
-    /// Returns the socket address for the gRPC server.
+
+    /// Returns the registration configuration.
     ///
     /// # Returns
-    /// A string in the format "host:port" suitable for binding a network socket
+    /// A reference to the registration configuration
     ///
     /// # Examples
     /// ```
-    /// use registration_service::config::Settings;
+    /// use registration_service::config::Config;
     ///
-    /// let settings = Settings::new().unwrap();
-    /// let addr = settings.get_socket_addr();
-    /// assert!(addr.contains(':'));
+    /// let config = Config::new().unwrap();
+    /// let registration_config = config.registration();
+    /// assert!(registration_config.use_ldap);
     /// ```
-    pub fn get_socket_addr(&self) -> String {
-        format!("{}:{}", self.grpc.server.endpoint, self.grpc.server.port)
+    pub fn registration(&self) -> &RegistrationConfig {
+        if env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()) == "development" {
+            &self.environments.development.config.registration
+        } else {
+            &self.environments.production.config.registration
+        }
     }
 }
 
@@ -298,10 +318,10 @@ mod tests {
     
     #[test]
     fn test_load_config() {
-        let settings = Settings::new().expect("Failed to load settings");
+        let config = Config::new().expect("Failed to load settings");
         
-        assert_eq!(settings.application.name, "registrationService");
-        assert!(settings.metrics.enabled);
-        assert!(!settings.metrics.export.datadog.enabled);
+        assert_eq!(config.application.name, "registrationService");
+        assert!(config.metrics.enabled);
+        assert!(!config.metrics.export.datadog.enabled);
     }
 }
