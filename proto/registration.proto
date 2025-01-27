@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package registration;
+package org.signal.registration;
 
 // Registration service for handling user registration
 service RegistrationService {

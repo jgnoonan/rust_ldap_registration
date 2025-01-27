@@ -14,9 +14,10 @@
 
 use tonic::transport::Server;
 use tracing::{info, error, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::fmt;
 use rust_ldap_registration::proto::registration::registration_service_server::RegistrationServiceServer;
 use rust_ldap_registration::grpc::RegistrationServer;
+use rust_ldap_registration::ldap_validation::{LdapValidationServer, LdapValidationService, LdapValidationServiceServer};
 use rust_ldap_registration::auth::ldap::{LdapClient, LdapConfig};
 use rust_ldap_registration::db::dynamodb::DynamoDbClient;
 use rust_ldap_registration::twilio::{TwilioClient, TwilioConfig};
@@ -48,15 +49,20 @@ use rust_ldap_registration::twilio::rate_limit::{RateLimiter, RateLimitConfig};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
-    FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .with_target(false)
-        .with_thread_ids(true)
+    if let Err(e) = fmt()
+        .with_max_level(Level::DEBUG)
         .with_file(true)
         .with_line_number(true)
-        .with_thread_names(true)
-        .pretty()
-        .init();
+        .with_thread_ids(true)
+        .with_target(false)
+        .with_level(true)
+        .with_ansi(true)
+        .with_writer(std::io::stdout)
+        .try_init()
+    {
+        eprintln!("Failed to initialize logging: {}", e);
+        std::process::exit(1);
+    }
 
     info!("Signal Registration Service starting up...");
     
@@ -72,11 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         url: registration_config.ldap.url.clone(),
         bind_dn: registration_config.ldap.bind_dn.clone(),
         bind_password: registration_config.ldap.bind_password.clone(),
-        search_base: registration_config.ldap.base_dn.clone(),
-        search_filter: registration_config.ldap.user_filter.clone(),
+        base_dn: registration_config.ldap.base_dn.clone(),
+        username_attribute: registration_config.ldap.username_attribute.clone(),
         phone_number_attribute: registration_config.ldap.phone_number_attribute.clone(),
-        connection_pool_size: registration_config.ldap.max_pool_size as usize,
-        timeout_secs: 5,  // Set a shorter timeout
     };
     info!("Attempting to connect to LDAP server...");
     let ldap_client = LdapClient::new(ldap_config).await?;
@@ -97,6 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth_token: registration_config.twilio.auth_token.clone().expect("Twilio auth token is required"),
         verify_service_sid: registration_config.twilio.verify_service_sid.clone().expect("Twilio verify service SID is required"),
         verification_timeout_secs: registration_config.twilio.verification_timeout_secs,
+        test_mode: registration_config.twilio.enabled,  // Use enabled flag as test mode indicator
     };
     let twilio_client = TwilioClient::new(twilio_config)?;
     info!("Twilio client initialized successfully");
@@ -110,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", registration_config.grpc.server.endpoint, registration_config.grpc.server.port).parse()?;
     info!("Creating gRPC server with address: {}", addr);
     let registration_server = RegistrationServer::new(
-        ldap_client,
+        ldap_client.clone(),
         twilio_client,
         dynamodb_client,
         rate_limiter,
@@ -120,6 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting gRPC server on http://{}", addr);
     Server::builder()
         .add_service(RegistrationServiceServer::new(registration_server))
+        .add_service(LdapValidationServiceServer::new(LdapValidationServer::new(ldap_client)))
         .serve(addr)
         .await
         .map_err(|e| {

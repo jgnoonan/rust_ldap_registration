@@ -33,10 +33,11 @@ environments:
           max_pool_size: 3
           pool_timeout: 5000
           max_retries: 3
-          user_filter: "(uid={0})"
           bind_dn: cn=admin,dc=valuelabs,dc=com
           bind_password: "Rat3onal"
           phone_number_attribute: mobile
+          username_attribute: uid
+          user_filter: "(uid={0})"
         dynamodb:
           enabled: true
           table_name: signal_accounts
@@ -44,9 +45,9 @@ environments:
           endpoint: http://localhost:8000  # For local development
         twilio:
           enabled: true
-          account_sid: "AC1234567890abcdef1234567890abcdef"  # Replace with actual SID
-          auth_token: "1234567890abcdef1234567890abcdef"     # Replace with actual token
-          verify_service_sid: "VA1234567890abcdef1234567890abcdef"  # Replace with actual SID
+          account_sid: ""  # Replace with actual SID
+          auth_token: ""     # Replace with actual token
+          verify_service_sid: ""  # Replace with actual SID
           verification_timeout_secs: 300
         rate_limits:
           check_verification_code:
@@ -89,19 +90,20 @@ environments:
           max_pool_size: 20
           pool_timeout: 300000
           max_retries: 3
-          user_filter: "(uid={0})"
           bind_dn: cn=admin,dc=valuelabs,dc=com
           bind_password: Rat3onal
           phone_number_attribute: mobile
+          username_attribute: uid
+          user_filter: "(uid={0})"
         dynamodb:
           enabled: true
           table_name: signal_accounts_prod
           region: us-west-2
         twilio:
           enabled: true
-          account_sid: "AC1234567890abcdef1234567890abcdef"  # Replace with actual SID
-          auth_token: "1234567890abcdef1234567890abcdef"     # Replace with actual token
-          verify_service_sid: "VA1234567890abcdef1234567890abcdef"  # Replace with actual SID
+          account_sid: ""  # Replace with actual SID
+          auth_token: ""     # Replace with actual token
+          verify_service_sid: ""  # Replace with actual SID
           verification_timeout_secs: 300
         rate_limits:
           check_verification_code:

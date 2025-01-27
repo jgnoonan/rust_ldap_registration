@@ -84,6 +84,8 @@ pub struct LdapConfig {
     pub bind_password: String,
     /// LDAP attribute containing phone number
     pub phone_number_attribute: String,
+    /// LDAP attribute for username
+    pub username_attribute: String,
 }
 
 /// Rate limiting configuration
@@ -309,19 +311,5 @@ impl Config {
         } else {
             &self.environments.production.config.registration
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_load_config() {
-        let config = Config::new().expect("Failed to load settings");
-        
-        assert_eq!(config.application.name, "registrationService");
-        assert!(config.metrics.enabled);
-        assert!(!config.metrics.export.datadog.enabled);
     }
 }

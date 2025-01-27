@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package org.signal.registration.ldap.rpc;
+
+service LdapValidationService {
+  // Validates LDAP credentials and returns the associated phone number
+  rpc ValidateCredentials (ValidateCredentialsRequest) returns (ValidateCredentialsResponse) {}
+}
+
+message ValidateCredentialsRequest {
+  // The user ID (username) to validate
+  string user_id = 1;
+  
+  // The password to validate
+  string password = 2;
+}
+
+message ValidateCredentialsResponse {
+  oneof result {
+    // The phone number associated with the validated credentials
+    string phone_number = 1;
+    
+    // Error details if validation failed
+    ValidateCredentialsError error = 2;
+  }
+}
+
+message ValidateCredentialsError {
+  ValidateCredentialsErrorType error_type = 1;
+  string message = 2;
+}
+
+enum ValidateCredentialsErrorType {
+  VALIDATE_CREDENTIALS_ERROR_TYPE_UNSPECIFIED = 0;
+  VALIDATE_CREDENTIALS_ERROR_TYPE_INVALID_CREDENTIALS = 1;
+  VALIDATE_CREDENTIALS_ERROR_TYPE_USER_NOT_FOUND = 2;
+  VALIDATE_CREDENTIALS_ERROR_TYPE_PHONE_NUMBER_NOT_FOUND = 3;
+  VALIDATE_CREDENTIALS_ERROR_TYPE_SERVER_ERROR = 4;
+}

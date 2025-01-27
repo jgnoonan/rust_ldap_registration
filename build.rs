@@ -17,6 +17,13 @@
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Compile the protocol buffer definitions
-    tonic_build::compile_protos("proto/registration.proto")?;
+    tonic_build::configure()
+        .compile(
+            &[
+                "proto/registration.proto",
+                "proto/ldap_validation.proto"
+            ],
+            &["proto"],
+        )?;
     Ok(())
 }

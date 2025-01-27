@@ -16,6 +16,7 @@
 /// - `db`: DynamoDB storage and data management
 /// - `grpc`: gRPC service implementation
 /// - `config`: Configuration management
+/// - `ldap_validation`: LDAP validation service
 ///
 /// # Example
 /// ```no_run
@@ -42,14 +43,26 @@
 /// Licensed under the AGPLv3 license.
 
 pub mod auth;
-pub mod db;
 pub mod twilio;
+pub mod db;
 pub mod grpc;
 pub mod config;
+pub mod ldap_validation;
 
 /// Generated protocol buffer code
 pub mod proto {
     pub mod registration {
-        tonic::include_proto!("registration");
+        tonic::include_proto!("org.signal.registration");
+    }
+    pub mod org {
+        pub mod signal {
+            pub mod registration {
+                pub mod ldap {
+                    pub mod rpc {
+                        tonic::include_proto!("org.signal.registration.ldap.rpc");
+                    }
+                }
+            }
+        }
     }
 }

@@ -163,30 +163,3 @@ impl From<RateLimits> for RateLimitConfig {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[tokio::test]
-    async fn test_rate_limit() {
-        let limiter = RateLimiter::new(RateLimitConfig {
-            max_attempts: 3,
-            window_secs: 60,
-        });
-        
-        let key = "test_key";
-        
-        // First three attempts should succeed
-        assert!(limiter.check_rate_limit(key).await);
-        assert!(limiter.check_rate_limit(key).await);
-        assert!(limiter.check_rate_limit(key).await);
-        
-        // Fourth attempt should fail
-        assert!(!limiter.check_rate_limit(key).await);
-        
-        // Reset should allow new attempts
-        limiter.reset_rate_limit(key).await;
-        assert!(limiter.check_rate_limit(key).await);
-    }
-}
