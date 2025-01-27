@@ -8,120 +8,107 @@ metrics:
     datadog:
       enabled: false
 
+# Base configuration
+registration:
+  use_ldap: true
+  grpc:
+    server:
+      endpoint: "0.0.0.0"
+      port: 50051
+      timeout_secs: 30
+    timeout_secs: 3600
+  ldap:
+    base_dn: dc=valuelabs,dc=com
+    bind_dn: cn=admin,dc=valuelabs,dc=com
+    phone_number_attribute: mobile
+    username_attribute: uid
+    connection_timeout: 5000
+    read_timeout: 5000
+    min_pool_size: 1
+    max_pool_size: 3
+    pool_timeout: 5000
+    max_retries: 3
+  dynamodb:
+    enabled: true
+    region: us-west-2
+  twilio:
+    enabled: true
+    verification_timeout_secs: 300
+  rate_limits:
+    check_verification_code:
+      delays: 60
+    leaky_bucket:
+      session_creation:
+        name: registration
+        max_capacity: 100
+        leak_rate: 0.1
+        initial_tokens: 100
+        permit_regeneration_period: 10
+        min_delay: 25
+    send_sms_verification_code:
+      delays: 10
+    send_voice_verification_code:
+      delays: 60
+      max_attempts: 3
+      delay_after_first_sms: 120
+
+# Environment-specific overrides
 environments:
   development:
     config:
       registration:
-        use_ldap: true
-        grpc:
-          server:
-            endpoint: "0.0.0.0"
-            port: 50051
-            timeout_secs: 30  # Default timeout for gRPC operations
-          timeout_secs: 3600  # Session timeout
         ldap:
           url: ldap://localhost:389
-          base_dn: dc=valuelabs,dc=com
           use_ssl: false
+          bind_password: "Rat3onal"
           trust_store: /Users/jgnoonan/registration-service/config/certs/truststore.jks
           trust_store_password: changeit
           trust_store_type: JKS
           hostname_verification: true
-          connection_timeout: 5000
-          read_timeout: 5000
-          min_pool_size: 1
-          max_pool_size: 3
-          pool_timeout: 5000
-          max_retries: 3
-          bind_dn: cn=admin,dc=valuelabs,dc=com
-          bind_password: "Rat3onal"
-          phone_number_attribute: mobile
-          username_attribute: uid
-          user_filter: "(uid={0})"
         dynamodb:
-          enabled: true
           table_name: signal_accounts
-          region: us-west-2
-          endpoint: http://localhost:8000  # For local development
+          endpoint: http://localhost:8000
         twilio:
-          enabled: true
-          account_sid: ""  # Replace with actual SID
-          auth_token: ""     # Replace with actual token
-          verify_service_sid: ""  # Replace with actual SID
-          verification_timeout_secs: 300
-        rate_limits:
-          check_verification_code:
-            delays: 60
-          leaky_bucket:
-            session_creation:
-              name: registration
-              max_capacity: 100
-              leak_rate: 0.1
-              initial_tokens: 100
-              permit_regeneration_period: 10
-              min_delay: 25
-          send_sms_verification_code:
-            delays: 10
-          send_voice_verification_code:
-            delays: 60
-            max_attempts: 3
-            delay_after_first_sms: 120
-  production:
-    config:
-      registration:
-        use_ldap: true
+          account_sid: ""  # Replace with actual SID for development
+          auth_token: ""   # Replace with actual token for development
+          verify_service_sid: ""  # Replace with actual SID for development
         grpc:
           server:
             endpoint: "0.0.0.0"
             port: 50051
-            timeout_secs: 30  # Default timeout for gRPC operations
-          timeout_secs: 3600  # Session timeout
+            timeout_secs: 30
+          timeout_secs: 3600
+        user_filter: "(uid={0})"
+  
+  production:
+    config:
+      registration:
         ldap:
           url: ldap://ldap.production:389
-          base_dn: dc=valuelabs,dc=com
           use_ssl: true
-          trust_store: /etc/certs/truststore.jks
-          trust_store_password: changeit
-          trust_store_type: JKS
-          hostname_verification: true
+          bind_password: ${LDAP_BIND_PASSWORD}  # Use environment variable in production
           connection_timeout: 30000
           read_timeout: 30000
           min_pool_size: 5
           max_pool_size: 20
           pool_timeout: 300000
-          max_retries: 3
-          bind_dn: cn=admin,dc=valuelabs,dc=com
-          bind_password: Rat3onal
-          phone_number_attribute: mobile
-          username_attribute: uid
-          user_filter: "(uid={0})"
+          trust_store: /etc/certs/truststore.jks
+          trust_store_password: changeit
+          trust_store_type: JKS
+          hostname_verification: true
         dynamodb:
-          enabled: true
           table_name: signal_accounts_prod
-          region: us-west-2
         twilio:
-          enabled: true
-          account_sid: ""  # Replace with actual SID
-          auth_token: ""     # Replace with actual token
-          verify_service_sid: ""  # Replace with actual SID
-          verification_timeout_secs: 300
-        rate_limits:
-          check_verification_code:
-            delays: 60
-          leaky_bucket:
-            session_creation:
-              name: registration
-              max_capacity: 200
-              leak_rate: 0.1
-              initial_tokens: 200
-              permit_regeneration_period: 10
-              min_delay: 25
-          send_sms_verification_code:
-            delays: 10
-          send_voice_verification_code:
-            delays: 60
-            max_attempts: 3
-            delay_after_first_sms: 120
+          account_sid: ${TWILIO_ACCOUNT_SID}
+          auth_token: ${TWILIO_AUTH_TOKEN}
+          verify_service_sid: ${TWILIO_VERIFY_SERVICE_SID}
+        grpc:
+          server:
+            endpoint: "0.0.0.0"
+            port: 50051
+            timeout_secs: 30
+          timeout_secs: 3600
+        user_filter: "(uid={0})"
 
 executors:
   scheduled:
@@ -142,5 +129,5 @@ grpc:
   server:
     endpoint: localhost
     port: 50052
-    timeout_secs: 30  # Default timeout for gRPC operations in seconds
+    timeout_secs: 30
   timeout_secs: 40
