@@ -1,0 +1,89 @@
+---
+application:
+  name: registrationService
+
+metrics:
+  enabled: true
+  export:
+    datadog:
+      enabled: false
+
+# Base configuration
+registration:
+  use_ldap: true
+  grpc:
+    server:
+      endpoint: "0.0.0.0"
+      port: 50051
+      timeout_secs: 30
+    timeout_secs: 3600
+  ldap:
+    base_dn: "dc=example,dc=com"
+    bind_dn: "cn=admin,dc=example,dc=com"
+    phone_number_attribute: mobile
+    username_attribute: uid
+    connection_timeout: 5000
+    read_timeout: 5000
+    min_pool_size: 1
+    max_pool_size: 3
+    pool_timeout: 5000
+    max_retries: 3
+  dynamodb:
+    enabled: true
+    region: us-west-2
+  twilio:
+    enabled: true
+    verification_timeout_secs: 300
+  rate_limits:
+    check_verification_code:
+      delays: 60
+    leaky_bucket:
+      session_creation:
+        name: registration
+        max_capacity: 100
+        leak_rate: 0.1
+        initial_tokens: 100
+        permit_regeneration_period: 10
+        min_delay: 25
+    send_sms_verification_code:
+      delays: 10
+    send_voice_verification_code:
+      delays: 60
+      max_attempts: 3
+      delay_after_first_sms: 120
+
+# Environment-specific overrides
+environments:
+  development:
+    config:
+      registration:
+        ldap:
+          url: "ldap://localhost:389"
+          use_ssl: false
+          bind_password: "your_bind_password_here"  # Replace with actual password
+        dynamodb:
+          table_name: signal_accounts
+          endpoint: "http://localhost:8000"  # For local DynamoDB
+        twilio:
+          account_sid: "your_account_sid_here"
+          auth_token: "your_auth_token_here"
+          verify_service_sid: "your_verify_service_sid_here"
+  
+  production:
+    config:
+      registration:
+        ldap:
+          url: "ldaps://ldap.production:636"  # Note: using LDAPS for production
+          use_ssl: true
+          bind_password: ${LDAP_BIND_PASSWORD}
+          connection_timeout: 30000
+          read_timeout: 30000
+          min_pool_size: 5
+          max_pool_size: 20
+          pool_timeout: 300000
+        dynamodb:
+          table_name: signal_accounts_prod
+        twilio:
+          account_sid: ${TWILIO_ACCOUNT_SID}
+          auth_token: ${TWILIO_AUTH_TOKEN}
+          verify_service_sid: ${TWILIO_VERIFY_SERVICE_SID}

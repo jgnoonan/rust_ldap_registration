@@ -1,63 +1,87 @@
-# Signal Registration Service (Rust Implementation)
+# Signal Registration Service
 
-A Rust implementation of the Signal Registration Service that handles user registration with LDAP authentication and Twilio verification.
-
-## Features
-
-- LDAP Authentication
-- Twilio SMS/Voice Verification
-- DynamoDB Storage
-- Rate Limiting
-- gRPC API
-- Configuration Management
+A Rust-based gRPC service for user registration with LDAP authentication, Twilio phone verification, and DynamoDB storage.
 
 ## Prerequisites
 
 - Rust (latest stable version)
-- Docker (for local DynamoDB)
-- LDAP Server
-- Twilio Account
-- AWS Account (for DynamoDB)
+- An LDAP server (e.g., OpenLDAP)
+- AWS DynamoDB (local or cloud)
+- Twilio account (for phone verification)
+- Protocol Buffers compiler
+
+### LDAP Server Requirements
+
+The LDAP server must:
+- Support simple bind authentication
+- Have users with the following attributes:
+  - `uid` or configurable username attribute
+  - `mobile` or configurable phone number attribute
+- Be accessible from the service host
 
 ## Configuration
 
-Configuration is managed through YAML files in the `config` directory:
+1. Copy the example configuration:
+```bash
+cp config/application.yml.example config/application.yml
+```
 
-- `application.yml`: Base configuration
-- `application-{environment}.yml`: Environment-specific configuration
-- `application-local.yml`: Local development overrides (not checked into git)
+2. Update the configuration with your environment-specific values:
+```yaml
+registration:
+  ldap:
+    url: "ldap://your-ldap-server:389"
+    base_dn: "dc=example,dc=com"
+    bind_dn: "cn=admin,dc=example,dc=com"
+    bind_password: "your-bind-password"
+```
 
-Environment variables can override any configuration value using the prefix `APP_`.
+### Environment Variables
 
-## Development Setup
+For production deployment, use environment variables for sensitive data:
+- `LDAP_BIND_PASSWORD`: LDAP bind password
+- `TWILIO_ACCOUNT_SID`: Twilio account SID
+- `TWILIO_AUTH_TOKEN`: Twilio auth token
+- `TWILIO_VERIFY_SERVICE_SID`: Twilio Verify service SID
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/rust_ldap_registration.git
-   cd rust_ldap_registration
-   ```
+## Building
 
-2. Copy the example configuration:
-   ```bash
-   cp config/application.yml config/application-local.yml
-   ```
+1. Install build dependencies:
+```bash
+# Ubuntu/Debian
+sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
 
-3. Update the configuration with your credentials.
+# macOS
+brew install protobuf
+```
 
-4. Start local DynamoDB:
-   ```bash
-   ./scripts/start_local_dynamodb.sh
-   ```
+2. Build the project:
+```bash
+cargo build --release
+```
 
-5. Create DynamoDB table:
-   ```bash
-   ./scripts/create_dynamodb_table.sh
-   ```
+## Running
 
-6. Build and run:
-   ```bash
-   cargo run
-   ```
+1. Start the service:
+```bash
+cargo run --release
+```
+
+The service will start on port 50051 by default.
+
+2. For development with a local DynamoDB:
+```bash
+# Start local DynamoDB
+docker run -p 8000:8000 amazon/dynamodb-local
+
+# Create required table
+aws dynamodb create-table \
+    --table-name signal_accounts \
+    --attribute-definitions AttributeName=phone_number,AttributeType=S \
+    --key-schema AttributeName=phone_number,KeyType=HASH \
+    --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
+    --endpoint-url http://localhost:8000
+```
 
 ## Testing
 
@@ -66,14 +90,21 @@ Run the test suite:
 cargo test
 ```
 
+### Manual Testing
+
+You can use the provided test client:
+```bash
+cargo run --bin test-client -- --username test.user --password userpass
+```
+
+## Monitoring
+
+The service exposes metrics on port 9090 and can be integrated with:
+- Prometheus
+- Datadog (when enabled in configuration)
+
 ## License
 
-Licensed under the AGPLv3 license. See LICENSE file for details.
+Copyright 2025 Joseph G Noonan
 
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+Licensed under the AGPLv3 license.
