@@ -90,13 +90,6 @@ Run the test suite:
 cargo test
 ```
 
-### Manual Testing
-
-You can use the provided test client:
-```bash
-cargo run --bin test-client -- --username test.user --password userpass
-```
-
 ## Monitoring
 
 The service exposes metrics on port 9090 and can be integrated with:
