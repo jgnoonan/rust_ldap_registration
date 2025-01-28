@@ -49,32 +49,58 @@ pub struct DatadogConfig {
 /// Rate limiting configuration
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RateLimits {
-    /// Check verification code rate limiting
+    /// Check verification code rate limits
+    #[serde(rename = "check_verification_code")]
     pub check_verification_code: DelayConfig,
-    /// Leaky bucket rate limiting
+    /// Leaky bucket rate limits
     pub leaky_bucket: LeakyBucketConfig,
-    /// Send SMS verification code rate limiting
+    /// SMS verification code rate limits
+    #[serde(rename = "send_sms_verification_code")]
     pub send_sms_verification_code: DelayConfig,
-    /// Send voice verification code rate limiting
+    /// Voice verification code rate limits
+    #[serde(rename = "send_voice_verification_code")]
     pub send_voice_verification_code: VoiceDelayConfig,
 }
 
 /// Delay configuration
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DelayConfig {
-    /// Number of delays
+    /// Delay in seconds
     pub delays: u64,
+    /// Java-compatible delay string (ignored)
+    #[serde(rename = "delays_seconds", skip_serializing_if = "Option::is_none")]
+    pub delays_seconds: Option<String>,
 }
 
 /// Voice delay configuration
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct VoiceDelayConfig {
-    /// Delay after first SMS
-    pub delay_after_first_sms: u64,
-    /// Number of delays
+    /// Delay in seconds
     pub delays: u64,
-    /// Maximum number of attempts allowed
+    /// Java-compatible delay string (ignored)
+    #[serde(rename = "delays_seconds", skip_serializing_if = "Option::is_none")]
+    pub delays_seconds: Option<String>,
+    /// Maximum number of attempts
     pub max_attempts: u32,
+    /// Delay after first SMS in seconds
+    pub delay_after_first_sms: u64,
+}
+
+/// Session creation configuration
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SessionCreationConfig {
+    /// Name of the rate limit
+    pub name: String,
+    /// Maximum capacity
+    pub max_capacity: u32,
+    /// Leak rate
+    pub leak_rate: f64,
+    /// Initial number of tokens
+    pub initial_tokens: u32,
+    /// Permit regeneration period in seconds
+    pub permit_regeneration_period: u64,
+    /// Minimum delay in seconds
+    pub min_delay: u64,
 }
 
 /// Leaky bucket configuration
@@ -84,72 +110,51 @@ pub struct LeakyBucketConfig {
     pub session_creation: SessionCreationConfig,
 }
 
-/// Session creation configuration
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct SessionCreationConfig {
-    /// Name of the session creation configuration
-    pub name: String,
-    /// Maximum capacity of the session creation configuration
-    pub max_capacity: u32,
-    /// Permit regeneration period of the session creation configuration
-    pub permit_regeneration_period: u64,
-    /// Minimum delay of the session creation configuration
-    pub min_delay: u64,
-}
-
-/// Rate limit configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RateLimitConfig {
-    /// Maximum number of requests per window
-    pub max_requests: u32,
-    /// Time window in seconds
-    #[serde(rename = "window")]
-    window_secs: u64,
-}
-
-impl RateLimitConfig {
-    pub fn window(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.window_secs)
-    }
-}
-
-/// LDAP connection and authentication configuration
+/// LDAP configuration
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LdapConfig {
     /// LDAP server URL
     pub url: String,
+    /// Base DN for LDAP searches
+    pub base_dn: String,
+    /// Whether to use SSL
+    pub use_ssl: bool,
     /// Bind DN for authentication
     pub bind_dn: String,
-    /// Password for bind DN
-    #[serde(skip_serializing)]
+    /// Bind password
     pub bind_password: String,
-    /// Base DN for searches
-    pub base_dn: String,
-    /// Attribute containing username
-    pub username_attribute: String,
-    /// Attribute containing phone number
+    /// Phone number attribute
     pub phone_number_attribute: String,
-}
-
-impl LdapConfig {
-    /// Validates the configuration
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.url.is_empty() {
-            return Err(ConfigError::MissingConfig("LDAP URL is required".to_string()));
-        }
-        if self.bind_dn.is_empty() {
-            return Err(ConfigError::MissingConfig("Bind DN is required".to_string()));
-        }
-        if self.bind_password.is_empty() {
-            return Err(ConfigError::MissingConfig("Bind password is required".to_string()));
-        }
-        if self.base_dn.is_empty() {
-            return Err(ConfigError::MissingConfig("Base DN is required".to_string()));
-        }
-        Ok(())
-    }
+    /// Username attribute
+    pub username_attribute: String,
+    /// Connection timeout in milliseconds
+    pub connection_timeout: u64,
+    /// Read timeout in milliseconds
+    pub read_timeout: u64,
+    /// Minimum connection pool size
+    pub min_pool_size: u32,
+    /// Maximum connection pool size
+    pub max_pool_size: u32,
+    /// Pool timeout in milliseconds
+    pub pool_timeout: u64,
+    /// Maximum number of retries
+    pub max_retries: u32,
+    /// Java-specific user filter (ignored)
+    #[serde(rename = "user_filter", skip_serializing_if = "Option::is_none")]
+    pub user_filter: Option<String>,
+    /// Java-specific trust store path (ignored)
+    #[serde(rename = "trustStore", skip_serializing_if = "Option::is_none")]
+    pub trust_store: Option<String>,
+    /// Java-specific trust store password (ignored)
+    #[serde(rename = "trustStorePassword", skip_serializing_if = "Option::is_none")]
+    pub trust_store_password: Option<String>,
+    /// Java-specific trust store type (ignored)
+    #[serde(rename = "trustStoreType", skip_serializing_if = "Option::is_none")]
+    pub trust_store_type: Option<String>,
+    /// Java-specific hostname verification (ignored)
+    #[serde(rename = "hostnameVerification", skip_serializing_if = "Option::is_none")]
+    pub hostname_verification: Option<bool>,
 }
 
 /// DynamoDB configuration
@@ -170,43 +175,14 @@ pub struct DynamoDbConfig {
 pub struct TwilioConfig {
     /// Whether Twilio is enabled
     pub enabled: bool,
-    /// Account SID for Twilio
-    pub account_sid: Option<String>,
-    /// Auth token for Twilio
-    pub auth_token: Option<String>,
-    /// Verify service SID for Twilio
-    pub verify_service_sid: Option<String>,
-    /// Verification timeout in seconds for Twilio
+    /// Verification timeout in seconds
     pub verification_timeout_secs: u64,
-}
-
-/// Transport selection configuration
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Selection {
-    /// SMS transport configuration
-    pub sms: TransportConfig,
-    /// Voice transport configuration
-    pub voice: VoiceTransportConfig,
-}
-
-/// Transport configuration
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TransportConfig {
-    /// Transport type
-    pub transport: String,
-    /// Fallback senders for transport
-    pub fallback_senders: Vec<String>,
-}
-
-/// Voice transport configuration
-#[derive(Debug, Deserialize, Serialize)]
-pub struct VoiceTransportConfig {
-    /// Transport type
-    pub transport: String,
-    /// Fallback senders for transport
-    pub fallback_senders: Vec<String>,
-    /// Default weights for transport
-    pub default_weights: std::collections::HashMap<String, u32>,
+    /// Twilio account SID
+    pub account_sid: Option<String>,
+    /// Twilio auth token
+    pub auth_token: Option<String>,
+    /// Twilio verify service SID
+    pub verify_service_sid: Option<String>,
 }
 
 /// gRPC server configuration
@@ -214,56 +190,75 @@ pub struct VoiceTransportConfig {
 pub struct GrpcConfig {
     /// Server configuration
     pub server: ServerConfig,
-    /// Timeout in seconds for gRPC operations
+    /// Session timeout in seconds
     pub timeout_secs: u64,
 }
 
 /// Server configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ServerConfig {
-    /// Endpoint for server
+    /// Server endpoint
     pub endpoint: String,
-    /// Port for server
+    /// Server port
     pub port: u16,
-    /// Session timeout in seconds
+    /// Operation timeout in seconds
     pub timeout_secs: u64,
 }
 
 /// Registration configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RegistrationConfig {
+    /// Whether to use LDAP
+    #[serde(rename = "use_ldap")]
     pub use_ldap: bool,
-    pub ldap: LdapConfig,
+    /// Java-compatible use LDAP flag (ignored)
+    #[serde(rename = "useLdap", skip_serializing_if = "Option::is_none")]
+    pub use_ldap_java: Option<bool>,
+    /// gRPC configuration
     pub grpc: GrpcConfig,
-    pub twilio: TwilioConfig,
+    /// LDAP configuration
+    pub ldap: LdapConfig,
+    /// DynamoDB configuration
     pub dynamodb: DynamoDbConfig,
+    /// Twilio configuration
+    pub twilio: TwilioConfig,
+    /// Rate limiting configuration
     pub rate_limits: RateLimits,
 }
 
 /// Environment configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EnvironmentConfig {
+    /// Registration configuration
     pub config: ConfigWrapper,
 }
 
 /// Config wrapper
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ConfigWrapper {
+    /// Registration configuration
     pub registration: RegistrationConfig,
 }
 
 /// Environments configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Environments {
+    /// Development environment configuration
     pub development: EnvironmentConfig,
+    /// Production environment configuration
     pub production: EnvironmentConfig,
 }
 
 /// Application configuration settings
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
+    /// Application metadata
     pub application: Application,
+    /// Metrics configuration
     pub metrics: Metrics,
+    /// Registration configuration
+    pub registration: RegistrationConfig,
+    /// Environment-specific configurations
     pub environments: Environments,
 }
 
@@ -314,23 +309,7 @@ impl Config {
     }
 
     /// Returns the registration configuration.
-    ///
-    /// # Returns
-    /// A reference to the registration configuration
-    ///
-    /// # Examples
-    /// ```
-    /// use registration_service::config::Config;
-    ///
-    /// let config = Config::new().unwrap();
-    /// let registration_config = config.registration();
-    /// assert!(registration_config.use_ldap);
-    /// ```
     pub fn registration(&self) -> &RegistrationConfig {
-        if std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()) == "development" {
-            &self.environments.development.config.registration
-        } else {
-            &self.environments.production.config.registration
-        }
+        &self.registration
     }
 }
