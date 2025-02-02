@@ -11,66 +11,35 @@ metrics:
       enabled: false
 
 # Base configuration
+grpc:
+  port: 50051
 registration:
-  use_ldap: true  # Rust primary
-  useLdap: true   # Java compatibility
-
-  # gRPC Server Configuration
+  use_ldap: false
   grpc:
-    server:
-      endpoint: "0.0.0.0"
-      port: 50051
-      timeout_secs: 30
-    timeout_secs: 3600
-
-  # LDAP Configuration
-  ldap:
-    url: "ldap://localhost:389"
-    base_dn: "dc=valuelabs,dc=com"
-    use_ssl: false
-    bind_dn: "cn=admin,dc=valuelabs,dc=com"
-    bind_password: "Rat3onal"
-    phone_number_attribute: "mobile"
-    username_attribute: "uid"
-    user_filter: "(uid={0})"  # Java compatibility
-    
-    # Connection settings
-    connection_timeout: 5000
-    read_timeout: 5000
-    min_pool_size: 1
-    max_pool_size: 3
-    pool_timeout: 5000
-    max_retries: 3
-
-    # Java-specific SSL settings (ignored by Rust)
-    trustStore: "/path/to/truststore.jks"
-    trustStorePassword: "changeit"
-    trustStoreType: "JKS"
-    hostnameVerification: true
-
-  # DynamoDB Configuration
+    host: "127.0.0.1"
+    port: 50051
+  directory:
+    # Directory service type
+    type: "entra_id"
+    entra_id:
+      tenant_id: "2f8b8c95-8509-4822-a393-dc8f12d2c829"
+      client_id: "bcd5ed86-07a1-4528-9c44-32e86b3e79ee"
+      client_secret: "${ENTRA_CLIENT_SECRET}"
+      phone_number_attribute: "mobilePhone"
   dynamodb:
     enabled: true
-    table_name: "signal_accounts"
+    table_name: "registration_service"
+    endpoint: "http://127.0.0.1:8000"
     region: "us-west-2"
-    endpoint: "http://localhost:8000"  # For local development
-
-  # Twilio Configuration
   twilio:
-    enabled: true
+    enabled: false
     verification_timeout_secs: 300
-    account_sid: ""
-    auth_token: ""
-    verify_service_sid: ""
-
-  # Rate Limiting Configuration
   rate_limits:
     check_verification_code:
-      delays: 60  # Rust format
-      delays_seconds: "60s"  # Java format
+      delays: 60
     leaky_bucket:
       session_creation:
-        name: "registration"
+        name: registration
         max_capacity: 100
         leak_rate: 0.1
         initial_tokens: 100
@@ -78,147 +47,7 @@ registration:
         min_delay: 25
     send_sms_verification_code:
       delays: 10
-      delays_seconds: "10s"
     send_voice_verification_code:
       delays: 60
-      delays_seconds: "60s"
       max_attempts: 3
-      delay_after_first_sms: 120
-
-  # Transport Selection (Java-specific, ignored by Rust)
-  selection:
-    sms:
-      transport: "NONE"
-      fallbackSenders: ["last-digits-of-phone-number"]
-    voice:
-      transport: "VOICE"
-      fallbackSenders: ["last-digits-of-phone-number"]
-      defaultWeights:
-        last-digits-of-phone-number: 100
-
-# Additional Service Flags (Java-specific, ignored by Rust)
-messagebird:
-  enabled: false
-
-bigtable:
-  enabled: false
-
-gcp:
-  enabled: false
-
-infobip:
-  enabled: false
-
-# Environment-specific overrides
-environments:
-  development:
-    config:
-      registration:
-        ldap:
-          url: "ldap://localhost:389"
-          use_ssl: false
-          bind_password: "Rat3onal"
-          base_dn: "dc=valuelabs,dc=com"
-          bind_dn: "cn=admin,dc=valuelabs,dc=com"
-          phone_number_attribute: "mobile"
-          username_attribute: "uid"
-          connection_timeout: 5000
-          read_timeout: 5000
-          min_pool_size: 1
-          max_pool_size: 3
-          pool_timeout: 5000
-          max_retries: 3
-        dynamodb:
-          enabled: true
-          table_name: "signal_accounts"
-          endpoint: "http://localhost:8000"
-          region: "us-west-2"
-        twilio:
-          enabled: true
-          verification_timeout_secs: 300
-          account_sid: "your_dev_sid"
-          auth_token: "your_dev_token"
-          verify_service_sid: "your_dev_verify_sid"
-        grpc:
-          server:
-            endpoint: "0.0.0.0"
-            port: 50051
-            timeout_secs: 30
-          timeout_secs: 3600
-        use_ldap: true
-        rate_limits:
-          check_verification_code:
-            delays: 60
-          leaky_bucket:
-            session_creation:
-              name: "registration"
-              max_capacity: 100
-              leak_rate: 0.1
-              initial_tokens: 100
-              permit_regeneration_period: 10
-              min_delay: 25
-          send_sms_verification_code:
-            delays: 10
-          send_voice_verification_code:
-            delays: 60
-            max_attempts: 3
-            delay_after_first_sms: 120
-  
-  production:
-    config:
-      registration:
-        ldap:
-          url: "ldaps://ldap.production:636"
-          use_ssl: true
-          bind_password: ${LDAP_BIND_PASSWORD}
-          base_dn: "dc=valuelabs,dc=com"
-          bind_dn: "cn=admin,dc=valuelabs,dc=com"
-          phone_number_attribute: "mobile"
-          username_attribute: "uid"
-          connection_timeout: 30000
-          read_timeout: 30000
-          min_pool_size: 5
-          max_pool_size: 20
-          pool_timeout: 300000
-          max_retries: 3
-        dynamodb:
-          enabled: true
-          table_name: "signal_accounts_prod"
-          endpoint: null
-          region: "us-west-2"
-        twilio:
-          enabled: true
-          verification_timeout_secs: 300
-          account_sid: ${TWILIO_ACCOUNT_SID}
-          auth_token: ${TWILIO_AUTH_TOKEN}
-          verify_service_sid: ${TWILIO_VERIFY_SERVICE_SID}
-        grpc:
-          server:
-            endpoint: "0.0.0.0"
-            port: 50051
-            timeout_secs: 30
-          timeout_secs: 3600
-        use_ldap: true
-        rate_limits:
-          check_verification_code:
-            delays: 60
-          leaky_bucket:
-            session_creation:
-              name: "registration"
-              max_capacity: 100
-              leak_rate: 0.1
-              initial_tokens: 100
-              permit_regeneration_period: 10
-              min_delay: 25
-          send_sms_verification_code:
-            delays: 10
-          send_voice_verification_code:
-            delays: 60
-            max_attempts: 3
-            delay_after_first_sms: 120
-
-# Executor Configuration (Java-specific, ignored by Rust)
-executors:
-  scheduled:
-    type: "scheduled"
-    corePoolSize: 16
+      delay_after_first_sms: 300
