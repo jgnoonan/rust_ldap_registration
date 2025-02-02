@@ -1,11 +1,11 @@
 [package]
-name = "rust_ldap_registration"
-version = "1.0.1"
+name = "entra-id-registration"
+version = "0.1.0"
 edition = "2021"
-authors = ["Signal"]
-description = "Signal Registration Service in Rust with LDAP Authentication"
+authors = ["jgnoonan"]
+description = "A registration service using Microsoft Entra ID"
 license = "AGPL-3.0"
-repository = "https://github.com/jgnoonan/rust_ldap_registration"
+repository = "https://github.com/jgnoonan/rust_entra_registration"
 
 [dependencies]
 # Async runtime
@@ -16,16 +16,8 @@ async-trait = "0.1.77"
 # Web framework and gRPC
 tonic = { version = "0.12.3", features = ["tls"] }
 prost = "0.13.4"
-axum = "0.8.1"
 
-# LDAP
-ldap3 = { version = "0.11.3", features = ["tls"] }
-
-# AWS
-aws-config = { version = "1.1.1", features = ["behavior-version-latest"] }
-aws-sdk-dynamodb = "1.9.0"
-
-# HTTP client
+# HTTP client for Entra ID
 reqwest = { version = "0.11.22", features = ["json", "rustls-tls"] }
 
 # Configuration
@@ -44,22 +36,12 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 
 # Utils
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
-chrono = { version = "0.4.31", features = ["serde"] }
-phonenumber = "0.3.3"
 
 # Testing
 [dev-dependencies]
 mockito = "1.2.0"
 tokio-test = "0.4.3"
 test-log = { version = "0.2", features = ["trace"] }
-tracing-test = "0.2"
-mockall = "0.12.1"
 
 [build-dependencies]
 tonic-build = "0.12.3"
-
-[profile.release]
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
