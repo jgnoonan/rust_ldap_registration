@@ -15,25 +15,21 @@ grpc:
   port: 50051
 registration:
   use_ldap: false
-  grpc:
-    host: "127.0.0.1"
-    port: 50051
   directory:
     # Directory service type
     type: "entra_id"
     entra_id:
-      tenant_id: "2f8b8c95-8509-4822-a393-dc8f12d2c829"
-      client_id: "bcd5ed86-07a1-4528-9c44-32e86b3e79ee"
-      client_secret: "${ENTRA_CLIENT_SECRET}"
+      tenant_id: ""
+      client_id: ""
+      client_secret: ""
       phone_number_attribute: "mobilePhone"
-  dynamodb:
-    enabled: true
-    table_name: "registration_service"
-    endpoint: "http://127.0.0.1:8000"
-    region: "us-west-2"
-  twilio:
-    enabled: false
-    verification_timeout_secs: 300
+  grpc:
+    timeout_secs: 30
+    server:
+      endpoint: "127.0.0.1"
+      port: 50051
+      timeout_secs: 30
+  session_timeout_secs: 300
   rate_limits:
     check_verification_code:
       delays: 60

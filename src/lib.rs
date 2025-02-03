@@ -1,68 +1,54 @@
 /// Signal Registration Service Library
 ///
-/// This library provides the core functionality for the Signal Registration Service,
-/// including LDAP authentication, Twilio verification, and DynamoDB storage.
+/// This library provides functionality for user registration with Microsoft Entra ID authentication.
 ///
 /// # Features
-/// - LDAP authentication and user management
-/// - Twilio SMS and voice verification
-/// - DynamoDB data persistence
-/// - gRPC service interface
-/// - Rate limiting and security
+/// - Microsoft Entra ID authentication and user validation
+/// - Twilio phone verification
+/// - Rate limiting and session management
+/// - gRPC service endpoints
 ///
 /// # Modules
-/// - `auth`: LDAP authentication and user management
-/// - `twilio`: Phone number verification via SMS and voice
-/// - `db`: DynamoDB storage and data management
-/// - `grpc`: gRPC service implementation
+/// - `auth`: Authentication management
 /// - `config`: Configuration management
-/// - `ldap_validation`: LDAP validation service
+/// - `grpc`: gRPC service implementation
+/// - `proto`: Protocol buffer definitions
+/// - `session`: Session management
+/// - `twilio`: Phone verification and rate limiting
 ///
 /// # Example
 /// ```no_run
-/// use registration_service::{
-///     auth::ldap::LdapClient,
+/// use entra_id_registration::{
 ///     twilio::TwilioClient,
-///     db::dynamodb::DynamoDbClient,
-///     config::Settings,
+///     grpc::RegistrationServer,
 /// };
 ///
 /// async fn setup_service() {
-///     let settings = Settings::new().expect("Failed to load configuration");
-///     let ldap_client = LdapClient::new(settings.ldap).await.expect("Failed to create LDAP client");
 ///     let twilio_client = TwilioClient::new(settings.twilio).expect("Failed to create Twilio client");
-///     let dynamodb_client = DynamoDbClient::new(settings.dynamodb).await.expect("Failed to create DynamoDB client");
+///     let rate_limiter = RateLimiter::new(settings.rate_limits);
+///     
+///     let server = RegistrationServer::new(
+///         twilio_client,
+///         rate_limiter,
+///         settings.session_timeout_secs,
+///     );
 /// }
 /// ```
 ///
-/// # Copyright
-/// Copyright (c) 2025 Signal Messenger, LLC
-/// All rights reserved.
-///
-/// # License
+/// @author Joseph G Noonan
+/// @copyright 2025
 /// Licensed under the AGPLv3 license.
 
 pub mod auth;
-pub mod twilio;
-pub mod db;
-pub mod grpc;
 pub mod config;
-pub mod ldap_validation;
+pub mod grpc;
+pub mod session;
+pub mod twilio;
 
 /// Generated protocol buffer code
 pub mod proto {
-    pub mod registration {
-        tonic::include_proto!("org.signal.registration");
-    }
-    pub mod org {
-        pub mod signal {
-            pub mod registration {
-                pub mod ldap {
-                    pub mod rpc {
-                        tonic::include_proto!("org.signal.registration.ldap.rpc");
-                    }
-                }
-            }
-        }
-    }
+    tonic::include_proto!("org.signal.registration");
 }
+
+pub use auth::entra::EntraIdClient;
+pub use grpc::RegistrationServer;

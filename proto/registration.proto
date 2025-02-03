@@ -2,50 +2,137 @@ syntax = "proto3";
 
 package org.signal.registration;
 
-// Registration service for handling user registration
+option java_multiple_files = true;
+option java_package = "org.signal.registration";
+
 service RegistrationService {
-  // Start a registration session
-  rpc StartRegistration (StartRegistrationRequest) returns (StartRegistrationResponse);
-  
-  // Verify a registration code
-  rpc VerifyCode (VerifyCodeRequest) returns (VerifyCodeResponse);
-  
-  // Complete registration
-  rpc CompleteRegistration (CompleteRegistrationRequest) returns (CompleteRegistrationResponse);
+  rpc CreateSession (CreateRegistrationSessionRequest) returns (CreateRegistrationSessionResponse) {}
+  rpc GetSessionMetadata (GetRegistrationSessionMetadataRequest) returns (GetRegistrationSessionMetadataResponse) {}
+  rpc SendVerificationCode (SendVerificationCodeRequest) returns (SendVerificationCodeResponse) {}
+  rpc CheckVerificationCode (CheckVerificationCodeRequest) returns (CheckVerificationCodeResponse) {}
 }
 
-message StartRegistrationRequest {
-  string username = 1;
-  string password = 2;
-  string channel = 3;  // "sms" or "voice"
+message CreateRegistrationSessionRequest {
+  uint64 e164 = 1;
+  bool account_exists_with_e164 = 2;
 }
 
-message StartRegistrationResponse {
-  string session_id = 1;
-  string phone_number = 2;
-  int32 verification_code_length = 3;
-  int32 verification_timeout_seconds = 4;
+message CreateRegistrationSessionResponse {
+  oneof response {
+    RegistrationSessionMetadata session_metadata = 1;
+    CreateRegistrationSessionError error = 2;
+  }
 }
 
-message VerifyCodeRequest {
-  string session_id = 1;
-  string code = 2;
+message RegistrationSessionMetadata {
+  bytes session_id = 1;
+  bool verified = 2;
+  uint64 e164 = 3;
+  bool may_request_sms = 4;
+  uint64 next_sms_seconds = 5;
+  bool may_request_voice_call = 6;
+  uint64 next_voice_call_seconds = 7;
+  bool may_check_code = 8;
+  uint64 next_code_check_seconds = 9;
+  uint64 expiration_seconds = 10;
 }
 
-message VerifyCodeResponse {
-  bool success = 1;
-  string message = 2;
-  int32 remaining_attempts = 3;
+message CreateRegistrationSessionError {
+  CreateRegistrationSessionErrorType error_type = 1;
+  bool may_retry = 2;
+  uint64 retry_after_seconds = 3;
 }
 
-message CompleteRegistrationRequest {
-  string session_id = 1;
-  uint64 registration_id = 2;
-  int32 device_id = 3;
-  string identity_key = 4;
+enum CreateRegistrationSessionErrorType {
+  CREATE_REGISTRATION_SESSION_ERROR_TYPE_UNSPECIFIED = 0;
+  CREATE_REGISTRATION_SESSION_ERROR_TYPE_RATE_LIMITED = 1;
+  CREATE_REGISTRATION_SESSION_ERROR_TYPE_ILLEGAL_PHONE_NUMBER = 2;
 }
 
-message CompleteRegistrationResponse {
-  bool success = 1;
-  string message = 2;
+message GetRegistrationSessionMetadataRequest {
+  bytes session_id = 1;
+}
+
+message GetRegistrationSessionMetadataResponse {
+  oneof response {
+    RegistrationSessionMetadata session_metadata = 1;
+    GetRegistrationSessionMetadataError error = 2;
+  }
+}
+
+message GetRegistrationSessionMetadataError {
+  GetRegistrationSessionMetadataErrorType error_type = 1;
+}
+
+enum GetRegistrationSessionMetadataErrorType {
+  GET_REGISTRATION_SESSION_METADATA_ERROR_TYPE_UNSPECIFIED = 0;
+  GET_REGISTRATION_SESSION_METADATA_ERROR_TYPE_NOT_FOUND = 1;
+}
+
+enum MessageTransport {
+  MESSAGE_TRANSPORT_UNSPECIFIED = 0;
+  MESSAGE_TRANSPORT_SMS = 1;
+  MESSAGE_TRANSPORT_VOICE = 2;
+}
+
+enum ClientType {
+  CLIENT_TYPE_UNSPECIFIED = 0;
+  CLIENT_TYPE_IOS = 1;
+  CLIENT_TYPE_ANDROID_WITH_FCM = 2;
+  CLIENT_TYPE_ANDROID_WITHOUT_FCM = 3;
+}
+
+message SendVerificationCodeRequest {
+  bytes session_id = 1;
+  MessageTransport transport = 2;
+  ClientType client_type = 3;
+}
+
+message SendVerificationCodeResponse {
+  oneof response {
+    RegistrationSessionMetadata session_metadata = 1;
+    SendVerificationCodeError error = 2;
+  }
+}
+
+message SendVerificationCodeError {
+  SendVerificationCodeErrorType error_type = 1;
+  bool may_retry = 2;
+  uint64 retry_after_seconds = 3;
+}
+
+enum SendVerificationCodeErrorType {
+  SEND_VERIFICATION_CODE_ERROR_TYPE_UNSPECIFIED = 0;
+  SEND_VERIFICATION_CODE_ERROR_TYPE_SENDER_REJECTED = 1;
+  SEND_VERIFICATION_CODE_ERROR_TYPE_RATE_LIMITED = 2;
+  SEND_VERIFICATION_CODE_ERROR_TYPE_SESSION_NOT_FOUND = 3;
+  SEND_VERIFICATION_CODE_ERROR_TYPE_SESSION_ALREADY_VERIFIED = 4;
+  SEND_VERIFICATION_CODE_ERROR_TYPE_TRANSPORT_NOT_ALLOWED = 5;
+  SEND_VERIFICATION_CODE_ERROR_TYPE_SUSPECTED_FRAUD = 6;
+}
+
+message CheckVerificationCodeRequest {
+  bytes session_id = 1;
+  string verification_code = 2;
+}
+
+message CheckVerificationCodeResponse {
+  oneof response {
+    RegistrationSessionMetadata session_metadata = 1;
+    CheckVerificationCodeError error = 2;
+  }
+}
+
+message CheckVerificationCodeError {
+  CheckVerificationCodeErrorType error_type = 1;
+  bool may_retry = 2;
+  uint64 retry_after_seconds = 3;
+}
+
+enum CheckVerificationCodeErrorType {
+  CHECK_VERIFICATION_CODE_ERROR_TYPE_UNSPECIFIED = 0;
+  CHECK_VERIFICATION_CODE_ERROR_TYPE_NO_CODE_SENT = 1;
+  CHECK_VERIFICATION_CODE_ERROR_TYPE_RATE_LIMITED = 2;
+  CHECK_VERIFICATION_CODE_ERROR_TYPE_SESSION_NOT_FOUND = 3;
+  CHECK_VERIFICATION_CODE_ERROR_TYPE_ATTEMPT_EXPIRED = 4;
 }

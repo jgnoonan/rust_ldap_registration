@@ -110,66 +110,6 @@ pub struct LeakyBucketConfig {
     pub session_creation: SessionCreationConfig,
 }
 
-/// LDAP configuration
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct LdapConfig {
-    /// LDAP server URL
-    pub url: String,
-    /// Base DN for LDAP searches
-    pub base_dn: String,
-    /// Whether to use SSL
-    pub use_ssl: bool,
-    /// Bind DN for authentication
-    pub bind_dn: String,
-    /// Bind password
-    pub bind_password: String,
-    /// Phone number attribute
-    pub phone_number_attribute: String,
-    /// Username attribute
-    pub username_attribute: String,
-    /// Connection timeout in milliseconds
-    pub connection_timeout: u64,
-    /// Read timeout in milliseconds
-    pub read_timeout: u64,
-    /// Minimum connection pool size
-    pub min_pool_size: u32,
-    /// Maximum connection pool size
-    pub max_pool_size: u32,
-    /// Pool timeout in milliseconds
-    pub pool_timeout: u64,
-    /// Maximum number of retries
-    pub max_retries: u32,
-    /// Java-specific user filter (ignored)
-    #[serde(rename = "user_filter", skip_serializing_if = "Option::is_none")]
-    pub user_filter: Option<String>,
-    /// Java-specific trust store path (ignored)
-    #[serde(rename = "trustStore", skip_serializing_if = "Option::is_none")]
-    pub trust_store: Option<String>,
-    /// Java-specific trust store password (ignored)
-    #[serde(rename = "trustStorePassword", skip_serializing_if = "Option::is_none")]
-    pub trust_store_password: Option<String>,
-    /// Java-specific trust store type (ignored)
-    #[serde(rename = "trustStoreType", skip_serializing_if = "Option::is_none")]
-    pub trust_store_type: Option<String>,
-    /// Java-specific hostname verification (ignored)
-    #[serde(rename = "hostnameVerification", skip_serializing_if = "Option::is_none")]
-    pub hostname_verification: Option<bool>,
-}
-
-/// DynamoDB configuration
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DynamoDbConfig {
-    /// Whether DynamoDB is enabled
-    pub enabled: bool,
-    /// DynamoDB table name
-    pub table_name: String,
-    /// AWS region
-    pub region: String,
-    /// DynamoDB endpoint (optional, for local development)
-    pub endpoint: Option<String>,
-}
-
 /// Twilio configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TwilioConfig {
@@ -205,48 +145,43 @@ pub struct ServerConfig {
     pub timeout_secs: u64,
 }
 
+/// Directory configuration
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DirectoryConfig {
+    /// Directory type
+    pub r#type: String,
+    /// Microsoft Entra ID configuration
+    pub entra_id: EntraIdConfig,
+}
+
+/// Microsoft Entra ID configuration
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EntraIdConfig {
+    /// Tenant ID
+    pub tenant_id: String,
+    /// Client ID
+    pub client_id: String,
+    /// Client secret
+    pub client_secret: String,
+    /// Phone number attribute
+    pub phone_number_attribute: String,
+}
+
 /// Registration configuration
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RegistrationConfig {
     /// Whether to use LDAP
-    #[serde(rename = "use_ldap")]
     pub use_ldap: bool,
-    /// Java-compatible use LDAP flag (ignored)
-    #[serde(rename = "useLdap", skip_serializing_if = "Option::is_none")]
-    pub use_ldap_java: Option<bool>,
+    /// Session timeout in seconds
+    pub session_timeout_secs: u64,
     /// gRPC configuration
     pub grpc: GrpcConfig,
-    /// LDAP configuration
-    pub ldap: LdapConfig,
-    /// DynamoDB configuration
-    pub dynamodb: DynamoDbConfig,
-    /// Twilio configuration
-    pub twilio: TwilioConfig,
-    /// Rate limiting configuration
+    /// Directory configuration
+    pub directory: DirectoryConfig,
+    /// Twilio configuration (optional)
+    pub twilio: Option<TwilioConfig>,
+    /// Rate limits configuration
     pub rate_limits: RateLimits,
-}
-
-/// Environment configuration
-#[derive(Debug, Deserialize, Serialize)]
-pub struct EnvironmentConfig {
-    /// Registration configuration
-    pub config: ConfigWrapper,
-}
-
-/// Config wrapper
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ConfigWrapper {
-    /// Registration configuration
-    pub registration: RegistrationConfig,
-}
-
-/// Environments configuration
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Environments {
-    /// Development environment configuration
-    pub development: EnvironmentConfig,
-    /// Production environment configuration
-    pub production: EnvironmentConfig,
 }
 
 /// Application configuration settings
@@ -258,8 +193,6 @@ pub struct Config {
     pub metrics: Metrics,
     /// Registration configuration
     pub registration: RegistrationConfig,
-    /// Environment-specific configurations
-    pub environments: Environments,
 }
 
 #[derive(Error, Debug)]
@@ -284,7 +217,7 @@ impl Config {
     /// # Configuration Sources
     /// Configuration is loaded in the following order (later sources override earlier ones):
     /// 1. Base configuration (`application.yml`)
-    /// 2. Environment variables (prefixed with `APP_`)
+    /// 2. Environment variables
     ///
     /// # Errors
     /// Returns a `ConfigError` if:
@@ -297,15 +230,21 @@ impl Config {
     /// use registration_service::config::Config;
     ///
     /// let config = Config::new().expect("Failed to load configuration");
-    /// println!("LDAP URL: {}", config.registration().ldap.url);
+    /// println!("Twilio Account SID: {}", config.registration().twilio.account_sid);
     /// ```
     pub fn new() -> Result<Self, ConfigError> {
         let builder = ConfigFile::builder()
             .add_source(File::with_name("config/application.yml"))
-            .add_source(Environment::with_prefix("APP"));
+            .add_source(
+                Environment::default()
+                    .separator("_")
+                    .try_parsing(true)
+            )
+            .set_override("registration.directory.entra_id.tenant_id", std::env::var("ENTRA_TENANT_ID").ok())?
+            .set_override("registration.directory.entra_id.client_id", std::env::var("ENTRA_CLIENT_ID").ok())?
+            .set_override("registration.directory.entra_id.client_secret", std::env::var("ENTRA_CLIENT_SECRET").ok())?;
 
-        let config = builder.build()?;
-        config.try_deserialize().map_err(|e| ConfigError::ParseError(e.to_string()))
+        builder.build()?.try_deserialize().map_err(|e| ConfigError::ParseError(e.to_string()))
     }
 
     /// Returns the registration configuration.

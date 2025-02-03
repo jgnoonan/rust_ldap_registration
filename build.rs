@@ -8,22 +8,15 @@
 /// - gRPC service code generation
 /// - Build-time configuration
 ///
-/// # Copyright
-/// Copyright (c) 2025 Signal Messenger, LLC
-/// All rights reserved.
-///
-/// # License
+/// @author Joseph G Noonan
+/// @copyright 2025
 /// Licensed under the AGPLv3 license.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Compile the protocol buffer definitions
     tonic_build::configure()
-        .compile_protos(
-            &[
-                "proto/registration.proto",
-                "proto/ldap_validation.proto"
-            ],
-            &["proto"],
-        )?;
+        .build_server(true)
+        .build_client(false)
+        .compile_protos(&["proto/registration.proto"], &["proto"])?;
     Ok(())
 }

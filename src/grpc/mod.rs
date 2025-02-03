@@ -1,324 +1,387 @@
 //! gRPC server implementation for the Signal Registration Service.
 //!
 //! This module implements the gRPC service endpoints defined in the proto files,
-//! handling user registration and LDAP validation requests. It manages user sessions,
-//! rate limiting, and coordinates between various backend services (LDAP, Twilio, DynamoDB).
+//! handling user registration and Entra ID validation requests. It manages user sessions,
+//! rate limiting, and coordinates between various backend services (Entra ID).
 //!
 //! @author Joseph G Noonan
 //! @copyright 2025
-use tonic::{Request, Response, Status};
-use crate::auth::ldap::{LdapClient, Error};
-use crate::twilio::TwilioClient;
-use crate::db::dynamodb::DynamoDbClient;
-use crate::twilio::rate_limit::RateLimiter;
-use crate::proto::registration::{
-    StartRegistrationRequest,
-    StartRegistrationResponse,
-    VerifyCodeRequest,
-    VerifyCodeResponse,
-    CompleteRegistrationRequest,
-    CompleteRegistrationResponse,
-    registration_service_server::RegistrationService,
-};
-use tracing::{error, debug};
-use std::time::{SystemTime, Duration};
+
 use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::Mutex;
-use uuid::Uuid;
+use std::time::SystemTime;
+use tracing::{info, warn, error};
 
-/// Represents a user registration session with associated state and timing information.
-#[derive(Debug)]
-struct Session {
-    /// Username associated with the session
-    username: String,
-    /// Phone number being verified
-    phone_number: String,
-    /// Timestamp when the session was created
-    created_at: SystemTime,
-    /// Whether the session has been verified
-    verified: bool,
-}
+use tonic::{Request, Response, Status};
+use tonic::metadata::MetadataMap;
+use rand::prelude::*;
 
-/// Maps LDAP errors to gRPC status codes
-impl From<Error> for Status {
-    fn from(error: Error) -> Self {
-        match error {
-            Error::Ldap(e) => Status::internal(format!("LDAP error: {}", e)),
-            Error::PhoneNumberNotFound(attr) => 
-                Status::not_found(format!("Phone number not found in attribute: {}", attr)),
-            Error::PhoneNumberEmpty => 
-                Status::invalid_argument("Phone number is empty"),
-            Error::UserNotFound(msg) => 
-                Status::not_found(format!("User not found: {}", msg)),
-            Error::AuthenticationFailed => 
-                Status::unauthenticated("Authentication failed"),
-            Error::ServerError(msg) => 
-                Status::internal(format!("Server error: {}", msg)),
-        }
+use crate::auth::entra::EntraIdClient;
+use crate::session::SessionStore;
+use crate::proto::{
+    registration_service_server::RegistrationService,
+    CreateRegistrationSessionRequest,
+    CreateRegistrationSessionResponse,
+    GetRegistrationSessionMetadataRequest,
+    GetRegistrationSessionMetadataResponse,
+    SendVerificationCodeRequest,
+    SendVerificationCodeResponse,
+    CheckVerificationCodeRequest,
+    CheckVerificationCodeResponse,
+    CreateRegistrationSessionError,
+    CreateRegistrationSessionErrorType,
+    SendVerificationCodeError,
+    SendVerificationCodeErrorType,
+    CheckVerificationCodeError,
+    CheckVerificationCodeErrorType,
+    create_registration_session_response,
+    get_registration_session_metadata_response,
+    send_verification_code_response,
+    check_verification_code_response,
+};
+
+/// Convert Entra ID errors to appropriate gRPC error responses
+fn entra_error_to_registration_error(err: crate::auth::entra::Error) -> CreateRegistrationSessionError {
+    match err {
+        crate::auth::entra::Error::RateLimitExceeded(_) => CreateRegistrationSessionError {
+            error_type: CreateRegistrationSessionErrorType::RateLimited as i32,
+            may_retry: true,
+            retry_after_seconds: 60, // Default 1 minute retry
+        },
+        crate::auth::entra::Error::PhoneNumberNotFound(_) => CreateRegistrationSessionError {
+            error_type: CreateRegistrationSessionErrorType::IllegalPhoneNumber as i32,
+            may_retry: false,
+            retry_after_seconds: 0,
+        },
+        _ => CreateRegistrationSessionError {
+            error_type: CreateRegistrationSessionErrorType::Unspecified as i32,
+            may_retry: false,
+            retry_after_seconds: 0,
+        },
     }
 }
 
-/// Main server implementation for the registration service.
-///
-/// Handles all gRPC endpoints related to user registration, including:
-/// - Starting registration process
-/// - Verifying phone numbers
-/// - Completing registration
-///
-/// The server maintains session state and coordinates between LDAP authentication,
-/// Twilio phone verification, and DynamoDB persistence.
+/// Registration service implementation
 pub struct RegistrationServer {
-    ldap_client: Arc<LdapClient>,
-    twilio_client: Arc<TwilioClient>,
-    dynamodb_client: Arc<DynamoDbClient>,
-    rate_limiter: Arc<RateLimiter>,
-    sessions: Arc<Mutex<HashMap<String, Session>>>,
-    session_timeout: Duration,
+    entra_client: Arc<EntraIdClient>,
+    session_store: SessionStore,
+    session_timeout: std::time::Duration,
+}
+
+impl RegistrationServer {
+    /// Create a new registration server instance
+    pub fn new(entra_client: Arc<EntraIdClient>) -> Self {
+        Self {
+            entra_client,
+            session_store: SessionStore::new(),
+            session_timeout: std::time::Duration::from_secs(300), // Default 5 minutes
+        }
+    }
+
+    /// Set the session timeout duration
+    pub fn with_session_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.session_timeout = timeout;
+        self
+    }
+
+    /// Generate a random 6-digit verification code
+    fn generate_verification_code() -> String {
+        let mut rng = rand::thread_rng();
+        format!("{:06}", rng.gen::<u32>() % 1000000)
+    }
 }
 
 #[tonic::async_trait]
 impl RegistrationService for RegistrationServer {
-    /// Starts a new registration process for a user.
-    ///
-    /// # Arguments
-    /// * `request` - Contains the username to validate
-    ///
-    /// # Returns
-    /// * Success: Response with session token for subsequent requests
-    /// * Error: Status with error details if validation fails
-    ///
-    /// # Flow
-    /// 1. Validates username exists in LDAP
-    /// 2. Creates new session
-    /// 3. Returns session token to client
-    async fn start_registration(
+    async fn create_session(
         &self,
-        request: Request<StartRegistrationRequest>,
-    ) -> Result<Response<StartRegistrationResponse>, Status> {
-        let req = request.into_inner();
+        request: Request<CreateRegistrationSessionRequest>,
+    ) -> Result<Response<CreateRegistrationSessionResponse>, Status> {
+        // Get username and password from metadata
+        let metadata = request.metadata();
+        info!("📝 Received metadata: {:?}", metadata);
         
-        debug!("Received validation request for user: {}", req.username);
-        debug!("Attempting LDAP authentication...");
-        
-        // Authenticate with LDAP and get phone number
-        let phone_number = self.ldap_client
-            .authenticate_user(&req.username, &req.password)
-            .await
-            .map_err(|e: Error| {
-                error!("LDAP authentication failed: {}", e);
-                Status::from(e)
-           })?;
-        
-        debug!("LDAP authentication successful, sending verification code...");
-        
-        // Check rate limit
-        if !self.rate_limiter.check_rate_limit(&phone_number).await {
-            return Err(Status::resource_exhausted("Too many verification attempts"));
-        }
-        
-        // Start Twilio verification
-        self.twilio_client
-            .send_verification_code(&phone_number, match req.channel.as_str() {
-                "sms" => crate::twilio::VerificationChannel::Sms,
-                "voice" => crate::twilio::VerificationChannel::Voice,
-                _ => return Err(Status::invalid_argument("Invalid channel. Must be 'sms' or 'voice'")),
-            })
-            .await
-            .map_err(|e| {
-                error!("Failed to send verification code: {}", e);
-                Status::internal(format!("Failed to send verification code: {}", e))
-            })?;
-        
-        debug!("Verification code sent successfully");
-        
-        // Create session
-        let session_id = Uuid::new_v4().to_string();
-        let session = Session {
-            username: req.username.clone(),
-            phone_number: phone_number.clone(),
-            verified: false,
-            created_at: SystemTime::now(),
-        };
-        
-        self.sessions.lock().await.insert(session_id.clone(), session);
-        
-        Ok(Response::new(StartRegistrationResponse {
-            session_id,
-            phone_number,
-            verification_code_length: 6,
-            verification_timeout_seconds: self.session_timeout.as_secs() as i32,
-        }))
-    }
-
-    /// Verifies a phone number for registration.
-    ///
-    /// # Arguments
-    /// * `request` - Contains session token and verification code
-    ///
-    /// # Returns
-    /// * Success: Response indicating verification code was sent
-    /// * Error: Status with error details if verification fails
-    ///
-    /// # Flow
-    /// 1. Validates session exists and is valid
-    /// 2. Verifies code with Twilio
-    /// 3. Updates session state
-    async fn verify_code(
-        &self,
-        request: Request<VerifyCodeRequest>,
-    ) -> Result<Response<VerifyCodeResponse>, Status> {
-        let req = request.into_inner();
-        
-        debug!("Received verification code for session: {}", req.session_id);
-        
-        // Get session
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(&req.session_id)
+        let username = metadata.get("username")
             .ok_or_else(|| {
-                error!("Session not found");
-                Status::not_found("Session not found")
-            })?;
-            
-        // Check if session is expired
-        if SystemTime::now()
-            .duration_since(session.created_at)
-            .unwrap_or_default() > self.session_timeout
-        {
-            sessions.remove(&req.session_id);
-            return Ok(Response::new(VerifyCodeResponse {
-                success: false,
-                message: "Session expired".to_string(),
-                remaining_attempts: 0,
-            }));
-        }
+                error!("❌ Username missing from metadata");
+                Status::invalid_argument("Username is required")
+            })?
+            .to_str()
+            .map_err(|_| {
+                error!("❌ Username is not valid UTF-8");
+                Status::invalid_argument("Username must be valid UTF-8")
+            })?
+            .to_string();
         
-        // Verify code with Twilio
-        let valid = self.twilio_client
-            .verify_code(&session.phone_number, &req.code)
-            .await
-            .map_err(|e| {
-                error!("Failed to verify code: {}", e);
-                Status::internal(format!("Failed to verify code: {}", e))
-            })?;
-            
-        if !valid {
-            return Ok(Response::new(VerifyCodeResponse {
-                success: false,
-                message: "Invalid verification code".to_string(),
-                remaining_attempts: 2, // TODO: Get actual remaining attempts from Twilio
-            }));
-        }
+        info!("👤 Got username: {}", username);
         
-        // Mark session as verified
-        session.verified = true;
-        
-        Ok(Response::new(VerifyCodeResponse {
-            success: true,
-            message: "Code verified successfully".to_string(),
-            remaining_attempts: 0,
-        }))
-    }
-
-    /// Completes the registration process.
-    ///
-    /// # Arguments
-    /// * `request` - Contains session token and verification code
-    ///
-    /// # Returns
-    /// * Success: Response indicating successful registration
-    /// * Error: Status with error details if verification fails
-    ///
-    /// # Flow
-    /// 1. Validates session exists and is valid
-    /// 2. Verifies code with Twilio
-    /// 3. Stores registration in DynamoDB
-    /// 4. Cleans up session
-    async fn complete_registration(
-        &self,
-        request: Request<CompleteRegistrationRequest>,
-    ) -> Result<Response<CompleteRegistrationResponse>, Status> {
-        let req = request.into_inner();
-        
-        debug!("Received complete registration request for session: {}", req.session_id);
-        
-        // Get and remove session
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .remove(&req.session_id)
+        let password = metadata.get("password")
             .ok_or_else(|| {
-                error!("Session not found");
-                Status::not_found("Session not found")
-            })?;
-            
-        // Check if session is verified
-        if !session.verified {
-            return Ok(Response::new(CompleteRegistrationResponse {
-                success: false,
-                message: "Phone number not verified".to_string(),
-            }));
-        }
+                error!("❌ Password missing from metadata");
+                Status::invalid_argument("Password is required")
+            })?
+            .to_str()
+            .map_err(|_| {
+                error!("❌ Password is not valid UTF-8");
+                Status::invalid_argument("Password must be valid UTF-8")
+            })?
+            .to_string();
         
-        // Save registration
-        match self.dynamodb_client.save_registration(
-            &session.username,
-            &session.phone_number,
-            &format!("{}", req.registration_id),
-        ).await {
-            Ok(_) => Ok(Response::new(CompleteRegistrationResponse {
-                success: true,
-                message: "Registration completed successfully".to_string(),
-            })),
-            Err(e) => {
-                error!("Failed to save registration: {}", e);
-                Ok(Response::new(CompleteRegistrationResponse {
-                    success: false,
-                    message: format!("Failed to save registration: {}", e),
+        info!("🔑 Got password (length: {})", password.len());
+
+        let req = request.into_inner();
+        info!("➡️  Creating registration session for e164: {}", req.e164);
+
+        // Validate credentials with Entra ID
+        info!("🔍 Authenticating user with Entra ID...");
+        match self.entra_client.authenticate_user(&username, &password).await {
+            Ok(phone_number) => {
+                info!("✅ Authentication successful, got phone number: {}", phone_number);
+                let e164 = phone_number.parse::<u64>()
+                    .map_err(|e| {
+                        error!("❌ Failed to parse phone number '{}': {}", phone_number, e);
+                        Status::internal("Failed to parse phone number")
+                    })?;
+                
+                info!("📱 Parsed phone number as e164: {}", e164);
+                let session_metadata = self.session_store.create_session(e164, self.session_timeout);
+                info!("✅ Created session for e164: {}", e164);
+                Ok(Response::new(CreateRegistrationSessionResponse {
+                    response: Some(create_registration_session_response::Response::SessionMetadata(session_metadata)),
+                }))
+            }
+            Err(err) => {
+                error!("❌ Failed to validate credentials: {:?}", err);
+                Ok(Response::new(CreateRegistrationSessionResponse {
+                    response: Some(create_registration_session_response::Response::Error(
+                        entra_error_to_registration_error(err),
+                    )),
                 }))
             }
         }
     }
-}
 
-impl RegistrationServer {
-    /// Creates a new instance of the registration server.
-    ///
-    /// # Arguments
-    /// * `ldap_client` - Client for LDAP authentication and user validation
-    /// * `twilio_client` - Client for phone number verification via Twilio
-    /// * `dynamodb_client` - Client for persistent storage in DynamoDB
-    /// * `rate_limiter` - Rate limiter to prevent abuse
-    /// * `session_timeout_secs` - Session timeout in seconds
-    ///
-    /// # Returns
-    /// A new `RegistrationServer` instance configured with the provided clients
-    pub fn new(
-        ldap_client: LdapClient,
-        twilio_client: TwilioClient,
-        dynamodb_client: DynamoDbClient,
-        rate_limiter: RateLimiter,
-        session_timeout_secs: u64,
-    ) -> Self {
-        Self {
-            ldap_client: Arc::new(ldap_client),
-            twilio_client: Arc::new(twilio_client),
-            dynamodb_client: Arc::new(dynamodb_client),
-            rate_limiter: Arc::new(rate_limiter),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            session_timeout: Duration::from_secs(session_timeout_secs),
+    async fn get_session_metadata(
+        &self,
+        request: Request<GetRegistrationSessionMetadataRequest>,
+    ) -> Result<Response<GetRegistrationSessionMetadataResponse>, Status> {
+        let req = request.into_inner();
+        info!("➡️  Getting session metadata");
+        
+        // Clean up expired sessions
+        self.session_store.cleanup_expired();
+        
+        // Get and validate session
+        if let Some(mut session) = self.session_store.get_session(&req.session_id) {
+            if session.is_expired() {
+                error!("❌ Session expired");
+                return Err(Status::not_found("Session expired"));
+            }
+            
+            // Update timing information
+            session.update_timing();
+            self.session_store.update_session(&req.session_id, session.clone());
+            
+            Ok(Response::new(GetRegistrationSessionMetadataResponse {
+                response: Some(get_registration_session_metadata_response::Response::SessionMetadata(session.metadata)),
+            }))
+        } else {
+            error!("❌ Session not found");
+            Err(Status::not_found("Session not found"))
         }
     }
 
-    /// Removes expired sessions from the session store.
-    ///
-    /// This is called periodically to prevent memory leaks from abandoned sessions.
-    pub async fn cleanup_expired_sessions(&self) {
-        let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_, session| {
-            SystemTime::now()
-                .duration_since(session.created_at)
-                .unwrap_or_default() <= self.session_timeout
-        });
+    async fn send_verification_code(
+        &self,
+        request: Request<SendVerificationCodeRequest>,
+    ) -> Result<Response<SendVerificationCodeResponse>, Status> {
+        let req = request.into_inner();
+        info!("➡️  Sending verification code");
+        
+        // Clean up expired sessions
+        self.session_store.cleanup_expired();
+        
+        // Get and validate session
+        if let Some(mut session) = self.session_store.get_session(&req.session_id) {
+            if session.is_expired() {
+                error!("❌ Session expired");
+                return Ok(Response::new(SendVerificationCodeResponse {
+                    response: Some(send_verification_code_response::Response::Error(
+                        SendVerificationCodeError {
+                            error_type: SendVerificationCodeErrorType::SessionNotFound as i32,
+                            may_retry: false,
+                            retry_after_seconds: 0,
+                        }
+                    )),
+                }));
+            }
+            
+            // Update timing information
+            session.update_timing();
+            
+            // Check if we can send a verification code
+            match req.transport {
+                0 => { // SMS
+                    if !session.metadata.may_request_sms {
+                        error!("❌ SMS rate limited");
+                        return Ok(Response::new(SendVerificationCodeResponse {
+                            response: Some(send_verification_code_response::Response::Error(
+                                SendVerificationCodeError {
+                                    error_type: SendVerificationCodeErrorType::RateLimited as i32,
+                                    may_retry: true,
+                                    retry_after_seconds: session.metadata.next_sms_seconds,
+                                }
+                            )),
+                        }));
+                    }
+                    session.last_sms_at = Some(SystemTime::now());
+                },
+                1 => { // Voice
+                    if !session.metadata.may_request_voice_call {
+                        error!("❌ Voice call rate limited");
+                        return Ok(Response::new(SendVerificationCodeResponse {
+                            response: Some(send_verification_code_response::Response::Error(
+                                SendVerificationCodeError {
+                                    error_type: SendVerificationCodeErrorType::RateLimited as i32,
+                                    may_retry: true,
+                                    retry_after_seconds: session.metadata.next_voice_call_seconds,
+                                }
+                            )),
+                        }));
+                    }
+                    session.last_voice_call_at = Some(SystemTime::now());
+                },
+                _ => {
+                    error!("❌ Invalid transport type");
+                    return Ok(Response::new(SendVerificationCodeResponse {
+                        response: Some(send_verification_code_response::Response::Error(
+                            SendVerificationCodeError {
+                                error_type: SendVerificationCodeErrorType::TransportNotAllowed as i32,
+                                may_retry: false,
+                                retry_after_seconds: 0,
+                            }
+                        )),
+                    }));
+                }
+            }
+            
+            // Generate and store verification code
+            let code = Self::generate_verification_code();
+            session.verification_code = Some(code.clone());
+            session.metadata.may_check_code = true;
+            session.metadata.next_code_check_seconds = 0;
+            
+            // TODO: Actually send the verification code via SMS or voice
+            info!("✅ Generated verification code: {}", code);
+            
+            // Update session
+            self.session_store.update_session(&req.session_id, session.clone());
+            
+            Ok(Response::new(SendVerificationCodeResponse {
+                response: Some(send_verification_code_response::Response::SessionMetadata(session.metadata)),
+            }))
+        } else {
+            error!("❌ Session not found");
+            Ok(Response::new(SendVerificationCodeResponse {
+                response: Some(send_verification_code_response::Response::Error(
+                    SendVerificationCodeError {
+                        error_type: SendVerificationCodeErrorType::SessionNotFound as i32,
+                        may_retry: false,
+                        retry_after_seconds: 0,
+                    }
+                )),
+            }))
+        }
+    }
+
+    async fn check_verification_code(
+        &self,
+        request: Request<CheckVerificationCodeRequest>,
+    ) -> Result<Response<CheckVerificationCodeResponse>, Status> {
+        let req = request.into_inner();
+        info!("➡️  Checking verification code");
+        
+        // Clean up expired sessions
+        self.session_store.cleanup_expired();
+        
+        // Get and validate session
+        if let Some(mut session) = self.session_store.get_session(&req.session_id) {
+            if session.is_expired() {
+                error!("❌ Session expired");
+                return Ok(Response::new(CheckVerificationCodeResponse {
+                    response: Some(check_verification_code_response::Response::Error(
+                        CheckVerificationCodeError {
+                            error_type: CheckVerificationCodeErrorType::SessionNotFound as i32,
+                            may_retry: false,
+                            retry_after_seconds: 0,
+                        }
+                    )),
+                }));
+            }
+            
+            // Update timing information
+            session.update_timing();
+            
+            // Check if we can verify a code
+            if !session.metadata.may_check_code {
+                error!("❌ Verification attempts exceeded");
+                return Ok(Response::new(CheckVerificationCodeResponse {
+                    response: Some(check_verification_code_response::Response::Error(
+                        CheckVerificationCodeError {
+                            error_type: CheckVerificationCodeErrorType::RateLimited as i32,
+                            may_retry: true,
+                            retry_after_seconds: session.metadata.next_code_check_seconds,
+                        }
+                    )),
+                }));
+            }
+            
+            // Verify the code
+            if let Some(stored_code) = &session.verification_code {
+                if req.verification_code == *stored_code {
+                    session.metadata.verified = true;
+                    info!("✅ Verification successful");
+                    
+                    // Update session
+                    self.session_store.update_session(&req.session_id, session.clone());
+                    
+                    Ok(Response::new(CheckVerificationCodeResponse {
+                        response: Some(check_verification_code_response::Response::SessionMetadata(session.metadata)),
+                    }))
+                } else {
+                    session.verification_attempts += 1;
+                    session.update_timing();
+                    
+                    // Update session
+                    self.session_store.update_session(&req.session_id, session.clone());
+                    
+                    warn!("❌ Invalid verification code");
+                    Ok(Response::new(CheckVerificationCodeResponse {
+                        response: Some(check_verification_code_response::Response::SessionMetadata(session.metadata)),
+                    }))
+                }
+            } else {
+                error!("❌ No verification code found");
+                Ok(Response::new(CheckVerificationCodeResponse {
+                    response: Some(check_verification_code_response::Response::Error(
+                        CheckVerificationCodeError {
+                            error_type: CheckVerificationCodeErrorType::NoCodeSent as i32,
+                            may_retry: true,
+                            retry_after_seconds: 0,
+                        }
+                    )),
+                }))
+            }
+        } else {
+            error!("❌ Session not found");
+            Ok(Response::new(CheckVerificationCodeResponse {
+                response: Some(check_verification_code_response::Response::Error(
+                    CheckVerificationCodeError {
+                        error_type: CheckVerificationCodeErrorType::SessionNotFound as i32,
+                        may_retry: false,
+                        retry_after_seconds: 0,
+                    }
+                )),
+            }))
+        }
     }
 }
